@@ -1,4 +1,4 @@
-"""Generate confirmed Planning V2 onboarding CSVs from CoCre8 local sources."""
+"""Generate confirmed Planning V2 onboarding CSVs from live CoCre8 SAP sources."""
 
 from __future__ import annotations
 
@@ -9,33 +9,29 @@ import pandas as pd
 
 from planning_v2.config import PlanningConfig, get_config
 from planning_v2.schemas import CONFIRMED_OUTPUT_OBJECTS, PENDING_OUTPUT_OBJECTS
+from planning_v2.sap_extracts import fetch_live_template_sources
 from planning_v2.template_specs import template_columns
 
 
 POPULATED_TEMPLATE_FIELDS = {
     "Parts": {
-        "SPLMaster": "Exco Parts.csv:SPLMaster",
-        "PartNumber": "Exco Parts.csv:ItemNo",
+        "PartNumber": "SAP Service Layer SQLQueries:OITM.ItemCode",
         "isPrimary": "SPI_DATA.csv:Main alternative par equals material/part number",
         "primaryPartNumber": "SPI_DATA.csv:Main alternative par",
-        "description": "Exco Parts.csv:ItemDescription/DisplayDescription",
+        "description": "SAP Service Layer SQLQueries:OITM.ItemName",
     },
     "Warehouses": {
-        "warehouseId": "Exco Warehouses.csv:WarehouseCode",
-        "warehouseDescription": "Exco Warehouses.csv:WarehouseName",
+        "warehouseId": "SAP Service Layer Warehouses:WarehouseCode",
+        "warehouseDescription": "SAP Service Layer Warehouses:WarehouseName",
     },
     "WarehouseStockOnHand": {
-        "partCode": "Exco InventoryCurrent.csv:ItemNo",
-        "warehouseCode": "Exco InventoryCurrent.csv:WarehouseCode",
-        "quantityAllocated": "Exco InventoryCurrent.csv:Commited",
-        "quantityOnHand": "Exco InventoryCurrent.csv:Quantity",
-        "quantityInbound": "Exco InventoryCurrent.csv:Ordered",
-        "uniqueId": "Derived stable key partCode|warehouseCode",
+        "partCode": "SAP Service Layer SQLQueries:OITW.ItemCode",
+        "warehouseCode": "SAP Service Layer SQLQueries:OITW.WhsCode",
+        "quantityAllocated": "SAP Service Layer SQLQueries:OITW.IsCommited",
+        "quantityOnHand": "SAP Service Layer SQLQueries:OITW.OnHand",
+        "quantityInbound": "SAP Service Layer SQLQueries:OITW.OnOrder",
     },
-    "Customers": {
-        "customerId": "Exco Customers.csv:CustomerCode",
-        "Description": "Exco Customers.csv:CustomerName",
-    },
+    "Customers": {},
 }
 
 
@@ -61,6 +57,13 @@ def _col(df: pd.DataFrame, name: str, default: object = "") -> pd.Series:
     return pd.Series([default] * len(df), index=df.index)
 
 
+def _first_col(df: pd.DataFrame, names: list[str], default: object = "") -> pd.Series:
+    for name in names:
+        if name in df.columns:
+            return df[name]
+    return pd.Series([default] * len(df), index=df.index)
+
+
 def _first_existing(*frames: pd.DataFrame) -> pd.DataFrame:
     for frame in frames:
         if not frame.empty:
@@ -74,13 +77,10 @@ def generate_onboarding_csvs(cfg: PlanningConfig, out_dir: Path) -> list[Path]:
     csv_dir.mkdir(parents=True, exist_ok=True)
     template_dir.mkdir(parents=True, exist_ok=True)
 
-    exco = cfg.exco_output_dir
-    inventory = _read_csv(exco / "InventoryCurrent.csv")
-    usage = _read_csv(exco / "Usage.csv")
-    stock_flow = _read_csv(exco / "StockFlow.csv")
-    warehouses = _read_csv(exco / "Warehouses.csv")
-    customers = _read_csv(exco / "Customers.csv")
-    parts = _read_csv(exco / "Parts.csv")
+    parts, warehouses, inventory = fetch_live_template_sources(cfg)
+    usage = pd.DataFrame()
+    stock_flow = pd.DataFrame()
+    customers = pd.DataFrame()
     spi = _read_spi(cfg.exco_source_dir / "SPI_DATA.csv")
 
     written: list[Path] = []
@@ -163,7 +163,7 @@ def build_template_parts(parts: pd.DataFrame, columns: list[str], spi: pd.DataFr
     item_keys = _col(parts, "ItemNo").map(_part_key)
     main_alt = item_keys.map(main_alt_by_part).fillna("")
     if "SPLMaster" in out.columns:
-        out["SPLMaster"] = _col(parts, "SPLMaster")
+        out["SPLMaster"] = ""
     if "PartNumber" in out.columns:
         out["PartNumber"] = _col(parts, "ItemNo")
     if "primaryPartNumber" in out.columns:
@@ -201,13 +201,13 @@ def build_template_stock_on_hand(inventory: pd.DataFrame, columns: list[str]) ->
     if "warehouseCode" in out.columns:
         out["warehouseCode"] = _col(inventory, "WarehouseCode")
     if "quantityAllocated" in out.columns:
-        out["quantityAllocated"] = _to_number(_col(inventory, "Commited"))
+        out["quantityAllocated"] = _to_number(_first_col(inventory, ["IsCommited", "Commited"]))
     if "quantityOnHand" in out.columns:
-        out["quantityOnHand"] = _to_number(_col(inventory, "Quantity"))
+        out["quantityOnHand"] = _to_number(_first_col(inventory, ["OnHand", "Quantity"]))
     if "quantityInbound" in out.columns:
-        out["quantityInbound"] = _to_number(_col(inventory, "Ordered"))
+        out["quantityInbound"] = _to_number(_first_col(inventory, ["OnOrder", "Ordered"]))
     if "uniqueId" in out.columns:
-        out["uniqueId"] = _col(inventory, "ItemNo").astype(str) + "|" + _col(inventory, "WarehouseCode").astype(str)
+        out["uniqueId"] = ""
     subset = [col for col in ["partCode", "warehouseCode"] if col in out.columns]
     return out.drop_duplicates(subset=subset, keep="first") if subset else out
 
@@ -457,12 +457,9 @@ def validate_outputs(csv_dir: Path, template_dir: Path) -> pd.DataFrame:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Generate CoCre8 Planning V2 onboarding CSVs.")
     parser.add_argument("--out", type=Path, default=Path("data") / "output" / "onboarding_csvs")
-    parser.add_argument("--exco-output-dir", type=Path, default=None)
     args = parser.parse_args(argv)
 
     cfg = get_config()
-    if args.exco_output_dir:
-        cfg = PlanningConfig(**{**cfg.__dict__, "exco_output_dir": args.exco_output_dir})
     written = generate_onboarding_csvs(cfg, args.out)
     print(f"Wrote {len(written)} onboarding files under {args.out.parent}")
     for path in written:

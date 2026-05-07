@@ -7,7 +7,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 
 
 def _load_env() -> None:
@@ -15,6 +15,25 @@ def _load_env() -> None:
         load_dotenv("planning.env", override=True)
     else:
         load_dotenv()
+
+    sap_keys = ("SAP_URL", "SAP_COMPANY", "SAP_USER", "SAP_PASSWORD")
+    use_minstock_sap = any(_is_missing_or_placeholder(os.getenv(key)) for key in sap_keys)
+    minstock3_dir = Path(os.getenv("MINSTOCK3_DIR", "C:/dev/cc8/MinStock3"))
+    for name in ("minstock.env", "pipeline.env"):
+        path = minstock3_dir / name
+        if not path.exists():
+            continue
+        values = dotenv_values(path)
+        for key in sap_keys:
+            if use_minstock_sap and values.get(key):
+                os.environ[key] = str(values[key])
+
+
+def _is_missing_or_placeholder(value: str | None) -> bool:
+    if not value:
+        return True
+    text = value.strip().lower()
+    return text in {"your-sap-host", "your_company_db", "your_username", "your_password"} or "your-sap-host" in text
 
 
 def _env_int(name: str, default: int) -> int:

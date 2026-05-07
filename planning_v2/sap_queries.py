@@ -27,6 +27,45 @@ ORDER BY
 """.strip()
 
 
+def build_template_item_master_sql() -> str:
+    return """
+SELECT
+    T0."ItemCode" AS "ItemNo",
+    T0."ItemName" AS "ItemDescription",
+    T0."ItmsGrpCod" AS "ItemsGroupCode"
+FROM OITM T0
+WHERE T0."InvntItem" = 'Y'
+ORDER BY T0."ItemCode"
+""".strip()
+
+
+def build_template_stock_on_hand_sql() -> str:
+    return """
+SELECT
+    T0."ItemCode" AS "ItemNo",
+    T1."ItemName" AS "ItemDescription",
+    T1."ItmsGrpCod" AS "ItemsGroupCode",
+    T0."WhsCode" AS "WarehouseCode",
+    T0."OnHand" AS "OnHand",
+    T0."IsCommited" AS "IsCommited",
+    T0."OnOrder" AS "OnOrder",
+    T0."MinStock" AS "MinStock",
+    T0."MaxStock" AS "MaxStock",
+    T0."AvgPrice" AS "AvgPrice"
+FROM OITW T0
+INNER JOIN OITM T1 ON T1."ItemCode" = T0."ItemCode"
+WHERE
+    T1."InvntItem" = 'Y'
+    AND (
+        T0."OnHand" <> 0
+        OR T0."IsCommited" <> 0
+        OR T0."OnOrder" <> 0
+    )
+ORDER BY
+    T0."WhsCode", T0."ItemCode"
+""".strip()
+
+
 def build_open_po_sql(cfg: PlanningConfig, today: date | None = None) -> str:
     cutoff_date = ((today or date.today()) - timedelta(days=90)).isoformat()
     return f"""

@@ -57,13 +57,21 @@ WAREHOUSE_TEMPLATE_NOTES = {
 }
 
 CUSTOMER_TEMPLATE_NOTES = {
+    "customerId": "Left blank. SAP BusinessPartners can supply customer codes, but the correct Planning V2 customer scope is not confirmed.",
     "customerGroupId": "Left blank. User has no confirmed source yet for customer grouping.",
+    "Description": "Left blank. SAP BusinessPartners can supply names, but the correct Planning V2 customer scope is not confirmed.",
     "assignAnySkill": "Left blank. User has no confirmed source yet for customer skill assignment rules.",
     "isActive": "Left blank. User has no confirmed source yet for customer active/inactive status.",
     "dseSlaCost": "Left blank. User has no confirmed source yet for SLA cost.",
     "dseSlaRevenue": "Left blank. User has no confirmed source yet for SLA revenue.",
     "stdResponseTime": "Left blank. User has no confirmed source yet for standard response time.",
     "stdRepairTime": "Left blank. User has no confirmed source yet for standard repair time.",
+}
+
+STOCK_ON_HAND_TEMPLATE_NOTES = {
+    "inventoryType": "Left blank. SAP OITW live stock metrics do not identify Planning V2 good/bad inventory type; do not infer from warehouse names.",
+    "quantityOutbound": "Left blank. SAP OITW has IsCommited, which is already mapped to quantityAllocated; no separate outbound quantity was found in the live stock metrics.",
+    "uniqueId": "Left blank. Template expects an integer technical id, but no confirmed source/key rule has been provided.",
 }
 
 
@@ -176,8 +184,8 @@ def classify_field(field: TargetField) -> FieldDecision:
         "ams_masters_spl_generated_from_distribution_portal": ("Local file", "masters.csv", "SPL Master / Items linked"),
         "bpart_alt": ("Local file", "masters.csv", "Items linked"),
         "bpart_cost": ("SPI file", "SPI_DATA.csv", field.field_name),
-        "whse_bpart_qty": ("SAP + Exco", "OITW / InventoryCurrent.csv", field.field_name),
-        "warehouse": ("Local dimension", "warehouse_dimension.csv / FactWarehouses.csv", field.field_name),
+        "whse_bpart_qty": ("SAP Service Layer", "SQLQueries on OITW/OITM", field.field_name),
+        "warehouse": ("SAP Service Layer", "Warehouses endpoint", field.field_name),
         "cust": ("Local dimension", "customers.csv / warehouse_dimension.csv", field.field_name),
     }
     if object_key in confirmed_sources:
@@ -211,7 +219,7 @@ def classify_field(field: TargetField) -> FieldDecision:
 
     if object_key == "parts_usage":
         if supplied.startswith("yes"):
-            return FieldDecision(field, STATUS_CONFIRMED, "Stock audit / Exco Usage", "Stock Audit Report / Usage.csv", field.field_name, _default_transform(field), "Medium", "Usage is confirmed at item/warehouse/date grain; work-order linkage may need SAP verification.")
+            return FieldDecision(field, STATUS_CONFIRMED, "Manual SAP stock audit report", "Stock Audit Report", field.field_name, _default_transform(field), "Medium", "Usage is allowed from the manually generated SAP Stock Audit Report; work-order linkage may need SAP verification.")
         return _sap_investigation_decision(field, "Usage detail exists, but serial/date granularity needs investigation.")
 
     if object_key in {"person", "node", "demand_trans_log"}:
@@ -262,12 +270,11 @@ def source_evidence_rows(cfg: PlanningConfig) -> list[dict[str, str]]:
         ("MinStock3 SAP stock", cfg.minstock3_dir / "extract_raw_stock.py", "OITW/OITM SQL for item, warehouse, on hand, minimum, ordered."),
         ("MinStock3 open PO", cfg.minstock3_dir / "extract_raw_stock.py", "OPOR/POR1 SQL for recent open purchase order quantity."),
         ("MinStock3 SPL masters", cfg.minstock3_dir / "map_masters.py", "masters.csv maps linked items to SPLMaster/MasterKey."),
-        ("MinStock3 warehouse/customer", cfg.minstock3_dir / "enrich_dimensions.py", "FactWarehouses.csv and customers.csv enrich warehouse/customer dimensions."),
+        ("SAP live warehouse lookup", "Service Layer Warehouses endpoint", "WarehouseCode and WarehouseName are fetched live for warehouses present in live stock rows."),
         ("MinStock3 SPI", cfg.minstock3_dir / "enrich_dimensions.py", "SPI_DATA supplies return/repair/list/credit pricing and derived CoCre8 cost."),
         ("MinStock3 usage", cfg.minstock3_dir / "enrich_dimensions.py", "Stock audit DN rows aggregate annual usage."),
-        ("Exco inventory output", cfg.exco_output_dir / "InventoryCurrent.csv", "Current stock, warehouse/customer, item, price, bin, and cost fields."),
-        ("Exco usage output", cfg.exco_output_dir / "Usage.csv", "Usage fact by posting date, item, warehouse, customer, and quantity."),
-        ("Exco stock flow output", cfg.exco_output_dir / "StockFlow.csv", "All stock audit movements by document type and signed quantity."),
+        ("Planning V2 live stock extract", "Service Layer SQLQueries on OITW/OITM", "Current stock metrics are fetched live from OITW: OnHand, IsCommited, OnOrder, MinStock, MaxStock, AvgPrice."),
+        ("Manual stock audit report", cfg.exco_source_dir / "Stock Audit Report.txt", "Allowed manual SAP report source for usage once mapped to the template."),
         ("Reference target fields", cfg.reference_dir / TARGET_FIELDS_FILE, "Planning V2 target field metadata and CC8 relevance hints."),
         ("Planning V2 sample templates", cfg.samples_dir / "Templates raw.xlsx", "Canonical onboarding template fields used for template-shaped CSV outputs."),
         ("Live SAP item group check", "MinStock3 SAP Service Layer credentials", "Checked Items and ItemGroups while VPN was connected. ItemGroups are broad customer/manufacturer groups such as FUJITSU, ACER, and CHOICE; sampled item master fields ItemType, ItemClass, and MaterialType are generic SAP classifications."),
@@ -425,7 +432,7 @@ def template_field_rows(cfg: PlanningConfig) -> list[dict[str, str]]:
                 if field.output_object == "Parts" and field.field_name in {"isPrimary", "primaryPartNumber"}:
                     notes = "Populated from SPI_DATA.csv Main alternative par. Blank when SPI has no main alternative value."
                 else:
-                    notes = "Populated in template CSV from confirmed local CoCre8/Exco source."
+                    notes = "Populated in template CSV from confirmed live SAP Service Layer or allowed SPI source."
             else:
                 status = STATUS_INVESTIGATE_SAP
                 confidence = "Low"
@@ -438,7 +445,11 @@ def template_field_rows(cfg: PlanningConfig) -> list[dict[str, str]]:
                     status = STATUS_INVESTIGATE_EXTERNAL
                     notes = CUSTOMER_TEMPLATE_NOTES[field.field_name]
                 elif field.output_object == "Warehouses" and field.field_name in WAREHOUSE_TEMPLATE_NOTES:
+                    status = STATUS_INVESTIGATE_EXTERNAL
                     notes = WAREHOUSE_TEMPLATE_NOTES[field.field_name]
+                elif field.output_object == "WarehouseStockOnHand" and field.field_name in STOCK_ON_HAND_TEMPLATE_NOTES:
+                    status = STATUS_NOT_AVAILABLE if field.field_name in {"inventoryType", "quantityOutbound"} else STATUS_INVESTIGATE_EXTERNAL
+                    notes = STOCK_ON_HAND_TEMPLATE_NOTES[field.field_name]
                 else:
                     notes = "Left blank in generated template CSV until source and semantics are confirmed."
             rows.append(

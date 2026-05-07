@@ -5,7 +5,7 @@ from datetime import date
 from pathlib import Path
 
 from planning_v2.config import PlanningConfig
-from planning_v2.sap_queries import build_open_po_sql, build_stock_sql
+from planning_v2.sap_queries import build_open_po_sql, build_stock_sql, build_template_stock_on_hand_sql
 
 
 def _cfg() -> PlanningConfig:
@@ -41,6 +41,11 @@ class SapQueryTests(unittest.TestCase):
     def test_open_po_query_uses_opor_por1_and_90_day_cutoff(self) -> None:
         sql = build_open_po_sql(_cfg(), today=date(2026, 5, 7))
         for token in ["POR1", "OPOR", '"OpenQty"', "2026-02-06"]:
+            self.assertIn(token, sql)
+
+    def test_template_stock_query_uses_live_exco_stock_metrics(self) -> None:
+        sql = build_template_stock_on_hand_sql()
+        for token in ['OITW', 'OITM', '"OnHand"', '"IsCommited"', '"OnOrder"', '"MinStock"', '"MaxStock"', '"AvgPrice"']:
             self.assertIn(token, sql)
 
 

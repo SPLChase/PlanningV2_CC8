@@ -48,7 +48,7 @@ class OnboardingCsvTests(unittest.TestCase):
     def test_template_parts_leaves_unproven_primary_fields_blank(self) -> None:
         parts = pd.DataFrame({"ItemNo": ["A1"], "SPLMaster": ["SPL1"], "ItemDescription": ["Part A"], "DisplayItemNo": ["A1"]})
         out = build_template_parts(parts, ["SPLMaster", "PartNumber", "isPrimary", "primaryPartNumber", "description"])
-        self.assertEqual(out.loc[0, "SPLMaster"], "SPL1")
+        self.assertEqual(out.loc[0, "SPLMaster"], "")
         self.assertEqual(out.loc[0, "isPrimary"], "")
         self.assertEqual(out.loc[0, "primaryPartNumber"], "")
 
