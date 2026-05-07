@@ -42,6 +42,30 @@ TABLE_STYLE = TableStyleInfo(
     showColumnStripes=False,
 )
 
+WAREHOUSE_TEMPLATE_NOTES = {
+    "addressId": "Expected site/address id linking to the Addresses template. Data dictionary field: warehouse.address_id.",
+    "nodeId": "Expected associated planning hierarchy node id. Data fields list this as warehouse.node_id / associated node.",
+    "returnWarehouseId": "Expected preferred warehouse for return/faulty stock going to repair or scrap. Data fields: return_warehouse.",
+    "supplyWarehouseId": "Expected preferred replenishment/source warehouse. Data fields: supply_warehouse.",
+    "warehouseTypeId": "Expected site type enum; sample template uses BOOT, DEP, and REPAIR. Data fields mark warehouse_type_id as critical.",
+    "isRepairWarehouse": "Expected true when this is an internal repair location. Data dictionary field: is_repair_whse.",
+    "isReplenishable": "Expected true when the site can be restocked. Data dictionary field: is_replenishable.",
+    "isBootStockable": "Expected true when technician/boot location can accept stock. Data fields: cst_boot_stockable.",
+    "isBranchStockable": "Expected true when branch/regional location can accept stock. Data fields: cst_branch_stockable.",
+    "isRemote": "Expected true when this is an outlying/regional location. Data fields: cst_remote.",
+    "warehouseStatusId": "Expected current/inactive status if required by the importer. Template says confirm; data fields mention cst_active and is_obsolete.",
+}
+
+CUSTOMER_TEMPLATE_NOTES = {
+    "customerGroupId": "Left blank. User has no confirmed source yet for customer grouping.",
+    "assignAnySkill": "Left blank. User has no confirmed source yet for customer skill assignment rules.",
+    "isActive": "Left blank. User has no confirmed source yet for customer active/inactive status.",
+    "dseSlaCost": "Left blank. User has no confirmed source yet for SLA cost.",
+    "dseSlaRevenue": "Left blank. User has no confirmed source yet for SLA revenue.",
+    "stdResponseTime": "Left blank. User has no confirmed source yet for standard response time.",
+    "stdRepairTime": "Left blank. User has no confirmed source yet for standard repair time.",
+}
+
 
 @dataclass(frozen=True)
 class TargetField:
@@ -410,6 +434,11 @@ def template_field_rows(cfg: PlanningConfig) -> list[dict[str, str]]:
                     notes = "Left blank. Live SAP item master check found broad ItemGroups such as FUJITSU/ACER/CHOICE and generic ItemType/ItemClass/MaterialType values, not Planning V2 class/type semantics."
                 elif field.output_object == "Parts":
                     notes = "Left blank. User indicated this field is unlikely to be available from current CoCre8 sources."
+                elif field.output_object == "Customers" and field.field_name in CUSTOMER_TEMPLATE_NOTES:
+                    status = STATUS_INVESTIGATE_EXTERNAL
+                    notes = CUSTOMER_TEMPLATE_NOTES[field.field_name]
+                elif field.output_object == "Warehouses" and field.field_name in WAREHOUSE_TEMPLATE_NOTES:
+                    notes = WAREHOUSE_TEMPLATE_NOTES[field.field_name]
                 else:
                     notes = "Left blank in generated template CSV until source and semantics are confirmed."
             rows.append(
