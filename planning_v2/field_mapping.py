@@ -25,6 +25,7 @@ STATUS_CONFIRMED = "Confirmed"
 STATUS_REVIEW = "Review required"
 STATUS_INVESTIGATE_SAP = "Investigate SAP first"
 STATUS_INVESTIGATE_EXTERNAL = "Investigate source"
+STATUS_NOT_AVAILABLE = "Not available in checked source"
 STATUS_OUT_OF_SCOPE = "Out of v1 scope"
 
 HEADER_FILL = PatternFill("solid", fgColor="1F4E78")
@@ -245,14 +246,16 @@ def source_evidence_rows(cfg: PlanningConfig) -> list[dict[str, str]]:
         ("Exco stock flow output", cfg.exco_output_dir / "StockFlow.csv", "All stock audit movements by document type and signed quantity."),
         ("Reference target fields", cfg.reference_dir / TARGET_FIELDS_FILE, "Planning V2 target field metadata and CC8 relevance hints."),
         ("Planning V2 sample templates", cfg.samples_dir / "Templates raw.xlsx", "Canonical onboarding template fields used for template-shaped CSV outputs."),
+        ("Live SAP item group check", "MinStock3 SAP Service Layer credentials", "Checked Items and ItemGroups while VPN was connected. ItemGroups are broad customer/manufacturer groups such as FUJITSU, ACER, and CHOICE; sampled item master fields ItemType, ItemClass, and MaterialType are generic SAP classifications."),
     ]
     rows = []
     for source_name, path, evidence in candidates:
+        exists = path.exists() if isinstance(path, Path) else ""
         rows.append(
             {
                 "Source": source_name,
                 "Path": str(path),
-                "Exists": "Yes" if path.exists() else "No",
+                "Exists": "Yes" if exists is True else "No" if exists is False else "N/A",
                 "Evidence": evidence,
             }
         )
@@ -335,7 +338,7 @@ def sap_investigation_rows(decisions: Iterable[FieldDecision]) -> list[dict[str,
 def unknown_rows(decisions: Iterable[FieldDecision]) -> list[dict[str, str]]:
     rows = []
     for decision in decisions:
-        if decision.source_status not in {STATUS_INVESTIGATE_SAP, STATUS_INVESTIGATE_EXTERNAL, STATUS_REVIEW}:
+        if decision.source_status not in {STATUS_INVESTIGATE_SAP, STATUS_INVESTIGATE_EXTERNAL, STATUS_REVIEW, STATUS_NOT_AVAILABLE}:
             continue
         rows.append(
             {
@@ -403,7 +406,8 @@ def template_field_rows(cfg: PlanningConfig) -> list[dict[str, str]]:
                 status = STATUS_INVESTIGATE_SAP
                 confidence = "Low"
                 if field.output_object == "Parts" and field.field_name in {"productClass", "productType", "partType"}:
-                    notes = "Left blank. CoCre8 local reporting has only item group codes; live SAP ItemGroups/OITM needs investigation for class/type semantics."
+                    status = STATUS_NOT_AVAILABLE
+                    notes = "Left blank. Live SAP item master check found broad ItemGroups such as FUJITSU/ACER/CHOICE and generic ItemType/ItemClass/MaterialType values, not Planning V2 class/type semantics."
                 elif field.output_object == "Parts":
                     notes = "Left blank. User indicated this field is unlikely to be available from current CoCre8 sources."
                 else:
@@ -532,7 +536,7 @@ def _status_fill(status: str) -> PatternFill | None:
         return CONFIRMED_FILL
     if status in {STATUS_REVIEW, "Partial"}:
         return REVIEW_FILL
-    if status in {STATUS_INVESTIGATE_SAP, STATUS_INVESTIGATE_EXTERNAL, "Pending/header only"}:
+    if status in {STATUS_INVESTIGATE_SAP, STATUS_INVESTIGATE_EXTERNAL, STATUS_NOT_AVAILABLE, "Pending/header only"}:
         return UNKNOWN_FILL
     if status == STATUS_OUT_OF_SCOPE:
         return STATIC_FILL
