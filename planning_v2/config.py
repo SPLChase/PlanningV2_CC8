@@ -48,6 +48,11 @@ class PlanningConfig:
     raw_dir: Path
     stage_dir: Path
     output_dir: Path
+    reference_dir: Path
+    cc8_source_root: Path
+    exco_source_dir: Path
+    exco_output_dir: Path
+    minstock3_dir: Path
     sap_url: str
     sap_company: str
     sap_user: str
@@ -71,6 +76,11 @@ def get_config() -> PlanningConfig:
         raw_dir=Path(os.getenv("RAW_DIR", "data/raw")),
         stage_dir=Path(os.getenv("STAGE_DIR", "data/stage")),
         output_dir=Path(os.getenv("OUTPUT_DIR", "data/output")),
+        reference_dir=Path(os.getenv("REFERENCE_DIR", "Reference")),
+        cc8_source_root=Path(os.getenv("CC8_SOURCE_ROOT", "C:/dev/cc8")),
+        exco_source_dir=Path(os.getenv("EXCO_SOURCE_DIR", "C:/dev/cc8/Exco/source_data")),
+        exco_output_dir=Path(os.getenv("EXCO_OUTPUT_DIR", "C:/dev/cc8/Exco/output/csv")),
+        minstock3_dir=Path(os.getenv("MINSTOCK3_DIR", "C:/dev/cc8/MinStock3")),
         sap_url=(os.getenv("SAP_URL") or "").rstrip("/"),
         sap_company=os.getenv("SAP_COMPANY") or "",
         sap_user=os.getenv("SAP_USER") or "",

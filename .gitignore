@@ -15,6 +15,10 @@ data/stage/
 data/output/
 *.xlsx
 *.xlsm
+!Reference/
+!Reference/*.xlsx
+!docs/field-map/
+!docs/field-map/CoCre8_PlanningV2_Field_Map.xlsx
 
 .DS_Store
 Thumbs.db

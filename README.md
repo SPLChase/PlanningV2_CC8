@@ -45,3 +45,37 @@ Fill `planning.env` with SAP Service Layer credentials and local data paths.
 ## Next Build Step
 
 Once the Planning Tool v2 template files and required tab/column definitions are confirmed, add extract/transform jobs that produce those exact template tables from CoCre8's SAP and dimension sources.
+
+## CoCre8 Onboarding V1
+
+Build the human-readable field map from the reference workbooks and local `C:\dev\cc8` evidence:
+
+```powershell
+py -m planning_v2.build_field_map --reference-dir Reference --cc8-root C:\dev\cc8
+```
+
+Output:
+
+- `docs/field-map/CoCre8_PlanningV2_Field_Map.xlsx`
+
+Generate usable onboarding CSVs from confirmed local sources, plus header-only templates for unresolved objects:
+
+```powershell
+py -m planning_v2.generate_onboarding_csvs --out data/output/onboarding_csvs
+```
+
+Generated CSVs under `data/output/` are ignored by git. The workbook has five review tabs:
+
+- `Target Fields`
+- `Source Evidence`
+- `Unknowns`
+- `Output Objects`
+- `SAP Investigation Log`
+
+Current populated CSV objects are `spl_masters`, `part_alternatives`, `parts`, `warehouses`, `customers`, `stock_detail`, `usage`, and `stock_flow`. Installed base, work orders, internal inventory movements, technicians, purchase orders, and repair orders remain investigation templates until SAP Service Layer sources are proven.
+
+Run tests:
+
+```powershell
+py -m unittest discover -s tests -v
+```
