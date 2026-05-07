@@ -49,6 +49,7 @@ class PlanningConfig:
     stage_dir: Path
     output_dir: Path
     reference_dir: Path
+    samples_dir: Path
     cc8_source_root: Path
     exco_source_dir: Path
     exco_output_dir: Path
@@ -77,6 +78,7 @@ def get_config() -> PlanningConfig:
         stage_dir=Path(os.getenv("STAGE_DIR", "data/stage")),
         output_dir=Path(os.getenv("OUTPUT_DIR", "data/output")),
         reference_dir=Path(os.getenv("REFERENCE_DIR", "Reference")),
+        samples_dir=Path(os.getenv("SAMPLES_DIR", "Samples")),
         cc8_source_root=Path(os.getenv("CC8_SOURCE_ROOT", "C:/dev/cc8")),
         exco_source_dir=Path(os.getenv("EXCO_SOURCE_DIR", "C:/dev/cc8/Exco/source_data")),
         exco_output_dir=Path(os.getenv("EXCO_OUTPUT_DIR", "C:/dev/cc8/Exco/output/csv")),

@@ -15,6 +15,8 @@ from openpyxl.worksheet.table import Table, TableStyleInfo
 
 from planning_v2.config import PlanningConfig, get_config
 from planning_v2.schemas import CONFIRMED_OUTPUT_OBJECTS, FIELD_MAP_WORKBOOK, PENDING_OUTPUT_OBJECTS
+from planning_v2.template_specs import load_template_fields
+from planning_v2.onboarding_csvs import POPULATED_TEMPLATE_FIELDS
 
 
 TARGET_FIELDS_FILE = "SPL Planning Data Fields.xlsx"
@@ -242,6 +244,7 @@ def source_evidence_rows(cfg: PlanningConfig) -> list[dict[str, str]]:
         ("Exco usage output", cfg.exco_output_dir / "Usage.csv", "Usage fact by posting date, item, warehouse, customer, and quantity."),
         ("Exco stock flow output", cfg.exco_output_dir / "StockFlow.csv", "All stock audit movements by document type and signed quantity."),
         ("Reference target fields", cfg.reference_dir / TARGET_FIELDS_FILE, "Planning V2 target field metadata and CC8 relevance hints."),
+        ("Planning V2 sample templates", cfg.samples_dir / "Templates raw.xlsx", "Canonical onboarding template fields used for template-shaped CSV outputs."),
     ]
     rows = []
     for source_name, path, evidence in candidates:
@@ -374,12 +377,79 @@ def build_field_map_workbook(cfg: PlanningConfig, output_path: Path | None = Non
     workbook = Workbook()
     workbook.remove(workbook.active)
     _write_sheet(workbook, "Target Fields", _target_field_rows(decisions))
+    _write_sheet(workbook, "Template Fields", template_field_rows(cfg))
     _write_sheet(workbook, "Source Evidence", source_evidence_rows(cfg))
-    _write_sheet(workbook, "Unknowns", unknown_rows(decisions))
-    _write_sheet(workbook, "Output Objects", output_object_rows(decisions))
+    _write_sheet(workbook, "Unknowns", unknown_rows(decisions) + template_unknown_rows(cfg))
+    _write_sheet(workbook, "Output Objects", output_object_rows(decisions) + template_output_rows(cfg))
     _write_sheet(workbook, "SAP Investigation Log", sap_investigation_rows(decisions))
     workbook.save(output_path)
     return output_path
+
+
+def template_field_rows(cfg: PlanningConfig) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for object_name, fields in load_template_fields(cfg.samples_dir).items():
+        populated = POPULATED_TEMPLATE_FIELDS.get(object_name, {})
+        for field in fields:
+            source = populated.get(field.field_name, "")
+            if source:
+                status = STATUS_CONFIRMED
+                confidence = "High" if field.field_name not in {"uniqueId"} else "Medium"
+                notes = "Populated in template CSV from confirmed local CoCre8/Exco source."
+            else:
+                status = STATUS_INVESTIGATE_SAP
+                confidence = "Low"
+                notes = "Left blank in generated template CSV until source and semantics are confirmed."
+            rows.append(
+                {
+                    "Template Object": object_name,
+                    "Field": field.field_name,
+                    "Field Type": field.field_type,
+                    "Template Notes": field.notes,
+                    "Source Status": status,
+                    "Source": source,
+                    "Confidence": confidence,
+                    "Implementation Notes": notes,
+                }
+            )
+    return rows
+
+
+def template_unknown_rows(cfg: PlanningConfig) -> list[dict[str, str]]:
+    rows = []
+    for row in template_field_rows(cfg):
+        if row["Source Status"] == STATUS_CONFIRMED:
+            continue
+        rows.append(
+            {
+                "Field": row["Field"],
+                "Object": row["Template Object"],
+                "Context": "Planning V2 template",
+                "Status": row["Source Status"],
+                "Question": f"What confirmed CoCre8/SAP source should populate {row['Template Object']}.{row['Field']}?",
+                "Next Action": "Investigate SAP Service Layer first; only use external/manual source if SAP cannot supply it.",
+                "Notes": row["Implementation Notes"],
+            }
+        )
+    return rows
+
+
+def template_output_rows(cfg: PlanningConfig) -> list[dict[str, str]]:
+    rows = []
+    for object_name, fields in load_template_fields(cfg.samples_dir).items():
+        populated = POPULATED_TEMPLATE_FIELDS.get(object_name, {})
+        readiness = "Partial" if populated else "Pending/header only"
+        blockers = [field.field_name for field in fields if field.field_name not in populated]
+        rows.append(
+            {
+                "Object": object_name,
+                "CSV": f"{object_name}.csv",
+                "Readiness": readiness,
+                "Fields": ", ".join(field.field_name for field in fields),
+                "Blockers": "; ".join(blockers),
+            }
+        )
+    return rows
 
 
 def _target_field_rows(decisions: Iterable[FieldDecision]) -> list[dict[str, str]]:

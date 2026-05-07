@@ -15,10 +15,15 @@ data/stage/
 data/output/
 *.xlsx
 *.xlsm
+~$*.xlsx
 !Reference/
 !Reference/*.xlsx
+!Samples/
+Samples/*
+!Samples/Templates raw.xlsx
 !docs/field-map/
-!docs/field-map/CoCre8_PlanningV2_Field_Map.xlsx
+!docs/field-map/*.xlsx
+docs/field-map/~$*.xlsx
 
 .DS_Store
 Thumbs.db

@@ -61,18 +61,19 @@ Output:
 Generate usable onboarding CSVs from confirmed local sources, plus header-only templates for unresolved objects:
 
 ```powershell
-py -m planning_v2.generate_onboarding_csvs --out data/output/onboarding_csvs
+py -m planning_v2.generate_onboarding_csvs --out data/output/template_onboarding_csvs
 ```
 
-Generated CSVs under `data/output/` are ignored by git. The workbook has five review tabs:
+Generated CSVs under `data/output/` are ignored by git. The workbook has review tabs for both the original reference field list and the Planning V2 sample-template fields:
 
 - `Target Fields`
+- `Template Fields`
 - `Source Evidence`
 - `Unknowns`
 - `Output Objects`
 - `SAP Investigation Log`
 
-Current populated CSV objects are `spl_masters`, `part_alternatives`, `parts`, `warehouses`, `customers`, `stock_detail`, `usage`, and `stock_flow`. Installed base, work orders, internal inventory movements, technicians, purchase orders, and repair orders remain investigation templates until SAP Service Layer sources are proven.
+Current template-shaped CSVs with confirmed partial data are `Parts`, `Warehouses`, `WarehouseStockOnHand`, and `Customers`. The remaining template CSVs are header-only until SAP Service Layer sources are proven.
 
 Run tests:
 

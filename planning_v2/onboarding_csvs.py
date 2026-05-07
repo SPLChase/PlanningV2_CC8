@@ -8,8 +8,33 @@ from pathlib import Path
 import pandas as pd
 
 from planning_v2.config import PlanningConfig, get_config
-from planning_v2.field_mapping import clean_text
 from planning_v2.schemas import CONFIRMED_OUTPUT_OBJECTS, PENDING_OUTPUT_OBJECTS
+from planning_v2.template_specs import template_columns
+
+
+POPULATED_TEMPLATE_FIELDS = {
+    "Parts": {
+        "SPLMaster": "Exco Parts.csv:SPLMaster",
+        "PartNumber": "Exco Parts.csv:ItemNo",
+        "description": "Exco Parts.csv:ItemDescription/DisplayDescription",
+    },
+    "Warehouses": {
+        "warehouseId": "Exco Warehouses.csv:WarehouseCode",
+        "warehouseDescription": "Exco Warehouses.csv:WarehouseName",
+    },
+    "WarehouseStockOnHand": {
+        "partCode": "Exco InventoryCurrent.csv:ItemNo",
+        "warehouseCode": "Exco InventoryCurrent.csv:WarehouseCode",
+        "quantityAllocated": "Exco InventoryCurrent.csv:Commited",
+        "quantityOnHand": "Exco InventoryCurrent.csv:Quantity",
+        "quantityInbound": "Exco InventoryCurrent.csv:Ordered",
+        "uniqueId": "Derived stable key partCode|warehouseCode",
+    },
+    "Customers": {
+        "customerId": "Exco Customers.csv:CustomerCode",
+        "Description": "Exco Customers.csv:CustomerName",
+    },
+}
 
 
 def _read_csv(path: Path) -> pd.DataFrame:
@@ -56,21 +81,145 @@ def generate_onboarding_csvs(cfg: PlanningConfig, out_dir: Path) -> list[Path]:
     parts = _read_csv(exco / "Parts.csv")
 
     written: list[Path] = []
-    written.append(_write_csv(build_spl_masters(parts), csv_dir / "spl_masters.csv"))
-    written.append(_write_csv(build_part_alternatives(parts), csv_dir / "part_alternatives.csv"))
-    written.append(_write_csv(build_parts(parts, inventory), csv_dir / "parts.csv"))
-    written.append(_write_csv(build_warehouses(warehouses), csv_dir / "warehouses.csv"))
-    written.append(_write_csv(build_customers(customers), csv_dir / "customers.csv"))
-    written.append(_write_csv(build_stock_detail(inventory), csv_dir / "stock_detail.csv"))
-    written.append(_write_csv(build_usage(usage), csv_dir / "usage.csv"))
-    written.append(_write_csv(build_stock_flow(stock_flow), csv_dir / "stock_flow.csv"))
+    templates = template_columns(cfg.samples_dir)
+    outputs = build_template_outputs(templates, inventory, usage, stock_flow, warehouses, customers, parts)
 
-    for object_name, columns in PENDING_OUTPUT_OBJECTS.items():
-        written.append(_write_csv(pd.DataFrame(columns=columns), template_dir / f"{object_name}.csv"))
+    for object_name, df in outputs.items():
+        written.append(_write_csv(df, csv_dir / f"{object_name}.csv"))
 
-    validation = validate_outputs(csv_dir, template_dir)
+    validation = validate_template_outputs(csv_dir, outputs, templates)
     written.append(_write_csv(validation, out_dir.parent / "validation_summary.csv"))
     return written
+
+
+def build_template_outputs(
+    templates: dict[str, list[str]],
+    inventory: pd.DataFrame,
+    usage: pd.DataFrame,
+    stock_flow: pd.DataFrame,
+    warehouses: pd.DataFrame,
+    customers: pd.DataFrame,
+    parts: pd.DataFrame,
+) -> dict[str, pd.DataFrame]:
+    outputs: dict[str, pd.DataFrame] = {}
+    for object_name, columns in templates.items():
+        if object_name == "Parts":
+            outputs[object_name] = build_template_parts(parts, columns)
+        elif object_name == "Warehouses":
+            outputs[object_name] = build_template_warehouses(warehouses, columns)
+        elif object_name == "WarehouseStockOnHand":
+            outputs[object_name] = build_template_stock_on_hand(inventory, columns)
+        elif object_name == "Customers":
+            outputs[object_name] = build_template_customers(customers, columns)
+        else:
+            outputs[object_name] = pd.DataFrame(columns=columns)
+    return outputs
+
+
+def _blank_template(columns: list[str], length: int) -> pd.DataFrame:
+    return pd.DataFrame({column: [""] * length for column in columns})
+
+
+def build_template_parts(parts: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+    if parts.empty:
+        return pd.DataFrame(columns=columns)
+    out = _blank_template(columns, len(parts))
+    if "SPLMaster" in out.columns:
+        out["SPLMaster"] = _col(parts, "SPLMaster")
+    if "PartNumber" in out.columns:
+        out["PartNumber"] = _col(parts, "ItemNo")
+    if "description" in out.columns:
+        out["description"] = _col(parts, "ItemDescription").where(
+            _col(parts, "ItemDescription").astype(str).str.strip().ne(""),
+            _col(parts, "DisplayDescription"),
+        )
+    return out.drop_duplicates(subset=[col for col in ["SPLMaster", "PartNumber"] if col in out.columns], keep="first")
+
+
+def build_template_warehouses(warehouses: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+    if warehouses.empty:
+        return pd.DataFrame(columns=columns)
+    out = _blank_template(columns, len(warehouses))
+    if "warehouseId" in out.columns:
+        out["warehouseId"] = _col(warehouses, "WarehouseCode")
+    if "warehouseDescription" in out.columns:
+        out["warehouseDescription"] = _col(warehouses, "WarehouseName")
+    return out.drop_duplicates(subset=["warehouseId"], keep="first") if "warehouseId" in out.columns else out
+
+
+def build_template_stock_on_hand(inventory: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+    if inventory.empty:
+        return pd.DataFrame(columns=columns)
+    out = _blank_template(columns, len(inventory))
+    if "partCode" in out.columns:
+        out["partCode"] = _col(inventory, "ItemNo")
+    if "warehouseCode" in out.columns:
+        out["warehouseCode"] = _col(inventory, "WarehouseCode")
+    if "quantityAllocated" in out.columns:
+        out["quantityAllocated"] = _to_number(_col(inventory, "Commited"))
+    if "quantityOnHand" in out.columns:
+        out["quantityOnHand"] = _to_number(_col(inventory, "Quantity"))
+    if "quantityInbound" in out.columns:
+        out["quantityInbound"] = _to_number(_col(inventory, "Ordered"))
+    if "uniqueId" in out.columns:
+        out["uniqueId"] = _col(inventory, "ItemNo").astype(str) + "|" + _col(inventory, "WarehouseCode").astype(str)
+    subset = [col for col in ["partCode", "warehouseCode"] if col in out.columns]
+    return out.drop_duplicates(subset=subset, keep="first") if subset else out
+
+
+def build_template_customers(customers: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+    if customers.empty:
+        return pd.DataFrame(columns=columns)
+    source = customers[_col(customers, "CustomerCode").astype(str).str.strip().ne("")].copy()
+    if source.empty:
+        return pd.DataFrame(columns=columns)
+    out = _blank_template(columns, len(source))
+    if "customerId" in out.columns:
+        out["customerId"] = _col(source, "CustomerCode")
+    if "Description" in out.columns:
+        out["Description"] = _col(source, "CustomerName")
+    return out.drop_duplicates(subset=["customerId"], keep="first") if "customerId" in out.columns else out
+
+
+def validate_template_outputs(
+    csv_dir: Path,
+    outputs: dict[str, pd.DataFrame],
+    templates: dict[str, list[str]],
+) -> pd.DataFrame:
+    rows = []
+    for object_name, columns in templates.items():
+        df = outputs.get(object_name, pd.DataFrame(columns=columns))
+        populated_fields = [
+            column
+            for column in columns
+            if column in df.columns and len(df) > 0 and df[column].astype(str).str.strip().ne("").any()
+        ]
+        missing = [column for column in columns if column not in df.columns]
+        if missing:
+            status = "FAIL"
+            notes = f"Missing template columns: {', '.join(missing)}"
+        elif len(df) == 0:
+            status = "PENDING"
+            notes = "Header-only template; no confirmed CoCre8 source yet."
+        elif len(populated_fields) == len(columns):
+            status = "PASS"
+            notes = "All template fields populated."
+        else:
+            status = "PARTIAL"
+            blank_fields = [column for column in columns if column not in populated_fields]
+            notes = "Populated: " + ", ".join(populated_fields)
+            if blank_fields:
+                notes += " | Needs source confirmation: " + ", ".join(blank_fields)
+        rows.append(
+            {
+                "Object": object_name,
+                "Path": str(csv_dir / f"{object_name}.csv"),
+                "Rows": len(df),
+                "Status": status,
+                "Notes": notes,
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def build_spl_masters(parts: pd.DataFrame) -> pd.DataFrame:

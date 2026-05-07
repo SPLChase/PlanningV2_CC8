@@ -14,6 +14,7 @@ def _cfg() -> PlanningConfig:
         stage_dir=Path("data/stage"),
         output_dir=Path("data/output"),
         reference_dir=Path("Reference"),
+        samples_dir=Path("Samples"),
         cc8_source_root=Path("C:/dev/cc8"),
         exco_source_dir=Path("C:/dev/cc8/Exco/source_data"),
         exco_output_dir=Path("C:/dev/cc8/Exco/output/csv"),
