@@ -16,6 +16,8 @@ POPULATED_TEMPLATE_FIELDS = {
     "Parts": {
         "SPLMaster": "Exco Parts.csv:SPLMaster",
         "PartNumber": "Exco Parts.csv:ItemNo",
+        "isPrimary": "SPI_DATA.csv:Main alternative par equals material/part number",
+        "primaryPartNumber": "SPI_DATA.csv:Main alternative par",
         "description": "Exco Parts.csv:ItemDescription/DisplayDescription",
     },
     "Warehouses": {
@@ -79,10 +81,11 @@ def generate_onboarding_csvs(cfg: PlanningConfig, out_dir: Path) -> list[Path]:
     warehouses = _read_csv(exco / "Warehouses.csv")
     customers = _read_csv(exco / "Customers.csv")
     parts = _read_csv(exco / "Parts.csv")
+    spi = _read_spi(cfg.exco_source_dir / "SPI_DATA.csv")
 
     written: list[Path] = []
     templates = template_columns(cfg.samples_dir)
-    outputs = build_template_outputs(templates, inventory, usage, stock_flow, warehouses, customers, parts)
+    outputs = build_template_outputs(templates, inventory, usage, stock_flow, warehouses, customers, parts, spi)
 
     for object_name, df in outputs.items():
         written.append(_write_csv(df, csv_dir / f"{object_name}.csv"))
@@ -100,11 +103,12 @@ def build_template_outputs(
     warehouses: pd.DataFrame,
     customers: pd.DataFrame,
     parts: pd.DataFrame,
+    spi: pd.DataFrame,
 ) -> dict[str, pd.DataFrame]:
     outputs: dict[str, pd.DataFrame] = {}
     for object_name, columns in templates.items():
         if object_name == "Parts":
-            outputs[object_name] = build_template_parts(parts, columns)
+            outputs[object_name] = build_template_parts(parts, columns, spi)
         elif object_name == "Warehouses":
             outputs[object_name] = build_template_warehouses(warehouses, columns)
         elif object_name == "WarehouseStockOnHand":
@@ -120,14 +124,55 @@ def _blank_template(columns: list[str], length: int) -> pd.DataFrame:
     return pd.DataFrame({column: [""] * length for column in columns})
 
 
-def build_template_parts(parts: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+def _read_spi(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        return pd.DataFrame()
+    return pd.read_csv(path, sep=";", dtype=str, encoding="utf-8-sig").fillna("")
+
+
+def _part_key(value: object) -> str:
+    text = str(value or "").strip()
+    if text.isdigit():
+        return text.lstrip("0") or "0"
+    return text.upper()
+
+
+def _spi_main_alt_lookup(spi: pd.DataFrame) -> dict[str, str]:
+    if spi.empty or "Main alternative par" not in spi.columns:
+        return {}
+    lookup: dict[str, str] = {}
+    for _, row in spi.iterrows():
+        main_alt = str(row.get("Main alternative par", "") or "").strip()
+        if not main_alt:
+            continue
+        material = str(row.get("Material", "") or "").strip()
+        part_number = str(row.get("PartNumber", "") or "").strip()
+        for key_source in [material, part_number, _part_key(material)]:
+            key = _part_key(key_source)
+            if key and key not in lookup:
+                lookup[key] = main_alt
+    return lookup
+
+
+def build_template_parts(parts: pd.DataFrame, columns: list[str], spi: pd.DataFrame | None = None) -> pd.DataFrame:
     if parts.empty:
         return pd.DataFrame(columns=columns)
+    spi = spi if spi is not None else pd.DataFrame()
+    main_alt_by_part = _spi_main_alt_lookup(spi)
     out = _blank_template(columns, len(parts))
+    item_keys = _col(parts, "ItemNo").map(_part_key)
+    main_alt = item_keys.map(main_alt_by_part).fillna("")
     if "SPLMaster" in out.columns:
         out["SPLMaster"] = _col(parts, "SPLMaster")
     if "PartNumber" in out.columns:
         out["PartNumber"] = _col(parts, "ItemNo")
+    if "primaryPartNumber" in out.columns:
+        out["primaryPartNumber"] = main_alt.map(lambda value: _part_key(value) if str(value).strip().isdigit() else str(value).strip())
+    if "isPrimary" in out.columns:
+        main_alt_keys = main_alt.map(_part_key)
+        out["isPrimary"] = ""
+        known = main_alt_keys.astype(str).str.strip().ne("")
+        out.loc[known, "isPrimary"] = (main_alt_keys[known] == item_keys[known]).map({True: "True", False: "False"})
     if "description" in out.columns:
         out["description"] = _col(parts, "ItemDescription").where(
             _col(parts, "ItemDescription").astype(str).str.strip().ne(""),

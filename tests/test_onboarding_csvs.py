@@ -52,6 +52,26 @@ class OnboardingCsvTests(unittest.TestCase):
         self.assertEqual(out.loc[0, "isPrimary"], "")
         self.assertEqual(out.loc[0, "primaryPartNumber"], "")
 
+    def test_template_parts_populates_primary_from_spi_main_alternative(self) -> None:
+        parts = pd.DataFrame(
+            {
+                "ItemNo": ["34076947", "38049457"],
+                "SPLMaster": ["SPL1", "SPL1"],
+                "ItemDescription": ["Main", "Alt"],
+            }
+        )
+        spi = pd.DataFrame(
+            {
+                "Material": ["000000000034076947", "000000000038049457"],
+                "PartNumber": ["34076947", "38049457"],
+                "Main alternative par": ["000000000034076947", "000000000034076947"],
+            }
+        )
+        out = build_template_parts(parts, ["SPLMaster", "PartNumber", "isPrimary", "primaryPartNumber", "description"], spi)
+        self.assertEqual(out.loc[0, "isPrimary"], "True")
+        self.assertEqual(out.loc[1, "isPrimary"], "False")
+        self.assertEqual(out.loc[1, "primaryPartNumber"], "34076947")
+
     def test_validation_flags_missing_confirmed_csv_columns(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

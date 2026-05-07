@@ -394,12 +394,20 @@ def template_field_rows(cfg: PlanningConfig) -> list[dict[str, str]]:
             source = populated.get(field.field_name, "")
             if source:
                 status = STATUS_CONFIRMED
-                confidence = "High" if field.field_name not in {"uniqueId"} else "Medium"
-                notes = "Populated in template CSV from confirmed local CoCre8/Exco source."
+                confidence = "High" if field.field_name not in {"uniqueId", "primaryPartNumber"} else "Medium"
+                if field.output_object == "Parts" and field.field_name in {"isPrimary", "primaryPartNumber"}:
+                    notes = "Populated from SPI_DATA.csv Main alternative par. Blank when SPI has no main alternative value."
+                else:
+                    notes = "Populated in template CSV from confirmed local CoCre8/Exco source."
             else:
                 status = STATUS_INVESTIGATE_SAP
                 confidence = "Low"
-                notes = "Left blank in generated template CSV until source and semantics are confirmed."
+                if field.output_object == "Parts" and field.field_name in {"productClass", "productType", "partType"}:
+                    notes = "Left blank. CoCre8 local reporting has only item group codes; live SAP ItemGroups/OITM needs investigation for class/type semantics."
+                elif field.output_object == "Parts":
+                    notes = "Left blank. User indicated this field is unlikely to be available from current CoCre8 sources."
+                else:
+                    notes = "Left blank in generated template CSV until source and semantics are confirmed."
             rows.append(
                 {
                     "Template Object": object_name,
