@@ -75,6 +75,25 @@ STOCK_ON_HAND_TEMPLATE_NOTES = {
     "uniqueId": "Left blank. Template expects an integer technical id, but no confirmed source/key rule has been provided.",
 }
 
+TEMPLATE_FIELDS_NOT_CC8_RELEVANT = {
+    ("ActionGroups", "actionGroupId"): "actgr.actgr_id is marked CC8 relevant = No.",
+    ("ActionGroups", "nodeId"): "actgr.node_id is marked CC8 relevant = No.",
+    ("ActionGroups", "actionGroupDescription"): "actgr.descr is marked CC8 relevant = No.",
+    ("ActionGroups", "assignAnySkill"): "Technician action groups are marked CC8 relevant = No.",
+    ("ActionGroups", "isUsed"): "actgr.is_used is marked CC8 relevant = No.",
+    ("ActionGroups", "isObsolete"): "actgr.is_obsolete is marked CC8 relevant = No.",
+    ("Employees", "actionGroupId"): "person.actgr_id is marked CC8 relevant = No.",
+    ("InventoryTransfers", "loClass"): "imo.LO_Class is marked CC8 relevant = No.",
+    ("PartCost", "averageRepairCost"): "bpart_cost.avg_repair_cost is marked CC8 relevant = No.",
+    ("Parts", "isService"): "bpart.is_service is marked CC8 relevant = No.",
+    ("Parts", "isTool"): "bpart.is_tool is marked CC8 relevant = No.",
+    ("Parts", "isSmallPart"): "bpart.cst_small_part is marked CC8 relevant = No.",
+    ("PartsUsage", "requestId"): "parts_usage.Request_ID is marked CC8 relevant = No.",
+    ("Warehouses", "nodeId"): "warehouse.node_id is marked CC8 relevant = No.",
+    ("Warehouses", "isRepairWarehouse"): "warehouse.is_repair_whse is marked CC8 relevant = No.",
+    ("Warehouses", "isBootStockable"): "warehouse.cst_boot_stockable is marked CC8 relevant = No.",
+}
+
 
 @dataclass(frozen=True)
 class TargetField:
@@ -433,7 +452,13 @@ def template_field_rows(cfg: PlanningConfig) -> list[dict[str, str]]:
         populated = POPULATED_TEMPLATE_FIELDS.get(object_name, {})
         for field in fields:
             source = populated.get(field.field_name, "")
-            if source:
+            out_of_scope_note = TEMPLATE_FIELDS_NOT_CC8_RELEVANT.get((field.output_object, field.field_name))
+            if out_of_scope_note:
+                status = STATUS_OUT_OF_SCOPE
+                source = ""
+                confidence = ""
+                notes = out_of_scope_note
+            elif source:
                 status = STATUS_CONFIRMED
                 confidence = "High" if field.field_name not in {"uniqueId", "primaryPartNumber"} else "Medium"
                 if field.output_object == "Parts" and field.field_name in {"isPrimary", "primaryPartNumber"}:
@@ -477,7 +502,7 @@ def template_field_rows(cfg: PlanningConfig) -> list[dict[str, str]]:
 def template_unknown_rows(cfg: PlanningConfig) -> list[dict[str, str]]:
     rows = []
     for row in template_field_rows(cfg):
-        if row["Source Status"] == STATUS_CONFIRMED:
+        if row["Source Status"] in {STATUS_CONFIRMED, STATUS_OUT_OF_SCOPE}:
             continue
         rows.append(
             {
@@ -495,16 +520,27 @@ def template_unknown_rows(cfg: PlanningConfig) -> list[dict[str, str]]:
 
 def template_output_rows(cfg: PlanningConfig) -> list[dict[str, str]]:
     rows = []
-    for object_name, fields in load_template_fields(cfg.samples_dir).items():
-        populated = POPULATED_TEMPLATE_FIELDS.get(object_name, {})
-        readiness = "Partial" if populated else "Pending/header only"
-        blockers = [field.field_name for field in fields if field.field_name not in populated]
+    by_object: dict[str, list[dict[str, str]]] = {}
+    for row in template_field_rows(cfg):
+        by_object.setdefault(row["Template Object"], []).append(row)
+    for object_name, field_rows in by_object.items():
+        relevant = [row for row in field_rows if row["Source Status"] != STATUS_OUT_OF_SCOPE]
+        populated = [row for row in relevant if row["Source Status"] == STATUS_CONFIRMED]
+        blockers = [row["Field"] for row in relevant if row["Source Status"] != STATUS_CONFIRMED]
+        if not relevant:
+            readiness = "Out of v1 scope"
+        elif not blockers:
+            readiness = "Ready"
+        elif populated:
+            readiness = "Partial"
+        else:
+            readiness = "Pending/header only"
         rows.append(
             {
                 "Object": object_name,
                 "CSV": f"{object_name}.csv",
                 "Readiness": readiness,
-                "Fields": ", ".join(field.field_name for field in fields),
+                "Fields": ", ".join(row["Field"] for row in relevant),
                 "Blockers": "; ".join(blockers),
             }
         )
