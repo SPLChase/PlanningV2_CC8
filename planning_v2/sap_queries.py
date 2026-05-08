@@ -66,6 +66,48 @@ ORDER BY
 """.strip()
 
 
+def build_purchase_order_lines_sql() -> str:
+    return """
+SELECT
+    P0."DocEntry" AS "DocEntry",
+    P0."DocNum" AS "PurchaseOrderNumber",
+    P1."LineNum" AS "LineNum",
+    P0."DocStatus" AS "DocStatus",
+    P0."CANCELED" AS "Canceled",
+    P0."CreateDate" AS "CreationDateTime",
+    P0."DocDate" AS "ApprovalDateTime",
+    P1."WhsCode" AS "ToWarehouseId",
+    P0."CardCode" AS "VendorId",
+    P1."ItemCode" AS "PartNumber",
+    P1."Quantity" AS "Quantity",
+    P1."LineTotal" AS "LineCost"
+FROM OPOR P0
+INNER JOIN POR1 P1 ON P1."DocEntry" = P0."DocEntry"
+WHERE P1."ItemCode" IS NOT NULL
+ORDER BY
+    P0."DocEntry" DESC, P1."LineNum"
+""".strip()
+
+
+def build_purchase_order_receipts_sql() -> str:
+    return """
+SELECT
+    G1."BaseEntry" AS "DocEntry",
+    G1."BaseLine" AS "LineNum",
+    SUM(G1."Quantity") AS "QuantityReceived",
+    MAX(G0."DocDate") AS "ReceivedDateTime"
+FROM PDN1 G1
+INNER JOIN OPDN G0 ON G0."DocEntry" = G1."DocEntry"
+WHERE
+    G1."BaseType" = 22
+    AND G0."CANCELED" = 'N'
+GROUP BY
+    G1."BaseEntry", G1."BaseLine"
+ORDER BY
+    G1."BaseEntry" DESC, G1."BaseLine"
+""".strip()
+
+
 def build_open_po_sql(cfg: PlanningConfig, today: date | None = None) -> str:
     cutoff_date = ((today or date.today()) - timedelta(days=90)).isoformat()
     return f"""

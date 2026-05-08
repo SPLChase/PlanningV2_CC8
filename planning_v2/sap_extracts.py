@@ -5,7 +5,12 @@ from __future__ import annotations
 import pandas as pd
 
 from planning_v2.config import PlanningConfig
-from planning_v2.sap_queries import build_template_item_master_sql, build_template_stock_on_hand_sql
+from planning_v2.sap_queries import (
+    build_purchase_order_lines_sql,
+    build_purchase_order_receipts_sql,
+    build_template_item_master_sql,
+    build_template_stock_on_hand_sql,
+)
 from planning_v2.sap_service_layer import SapServiceLayer
 
 
@@ -107,3 +112,62 @@ def fetch_live_template_sources(cfg: PlanningConfig) -> tuple[pd.DataFrame, pd.D
     )
 
     return items.reset_index(drop=True), stock_warehouses, stock.reset_index(drop=True)
+
+
+def fetch_live_purchase_orders(cfg: PlanningConfig) -> pd.DataFrame:
+    with SapServiceLayer(cfg) as sap:
+        sap.ensure_sql_query(f"{cfg.sql_query_code}_PO_LINES", build_purchase_order_lines_sql())
+        sap.ensure_sql_query(f"{cfg.sql_query_code}_PO_RECEIPTS", build_purchase_order_receipts_sql())
+        line_rows = sap.run_sql_query(f"{cfg.sql_query_code}_PO_LINES")
+        receipt_rows = sap.run_sql_query(f"{cfg.sql_query_code}_PO_RECEIPTS")
+
+    lines = pd.DataFrame(line_rows)
+    if lines.empty:
+        return pd.DataFrame(
+            columns=[
+                "DocEntry",
+                "PurchaseOrderNumber",
+                "LineNum",
+                "DocStatus",
+                "Canceled",
+                "CreationDateTime",
+                "ApprovalDateTime",
+                "ToWarehouseId",
+                "VendorId",
+                "PartNumber",
+                "Quantity",
+                "LineCost",
+                "QuantityReceived",
+                "ReceivedDateTime",
+            ]
+        )
+
+    receipts = pd.DataFrame(receipt_rows)
+    if receipts.empty:
+        receipts = pd.DataFrame(columns=["DocEntry", "LineNum", "QuantityReceived", "ReceivedDateTime"])
+
+    for frame in [lines, receipts]:
+        for column in ["DocEntry", "LineNum"]:
+            if column in frame.columns:
+                frame[column] = pd.to_numeric(frame[column], errors="coerce").fillna(-1).astype(int)
+
+    merged = lines.merge(receipts, on=["DocEntry", "LineNum"], how="left")
+    for column in [
+        "PurchaseOrderNumber",
+        "DocStatus",
+        "Canceled",
+        "CreationDateTime",
+        "ApprovalDateTime",
+        "ToWarehouseId",
+        "VendorId",
+        "PartNumber",
+        "ReceivedDateTime",
+    ]:
+        if column not in merged.columns:
+            merged[column] = ""
+        merged[column] = merged[column].map(_clean_text)
+    for column in ["Quantity", "LineCost", "QuantityReceived"]:
+        if column not in merged.columns:
+            merged[column] = 0
+        merged[column] = _to_number(merged[column])
+    return merged.reset_index(drop=True)

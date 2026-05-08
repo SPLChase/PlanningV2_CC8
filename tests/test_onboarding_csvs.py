@@ -6,7 +6,14 @@ from pathlib import Path
 
 import pandas as pd
 
-from planning_v2.onboarding_csvs import build_template_parts, build_template_parts_usage, build_template_stock_on_hand, build_stock_detail, validate_outputs
+from planning_v2.onboarding_csvs import (
+    build_template_parts,
+    build_template_parts_usage,
+    build_template_purchase_orders,
+    build_template_stock_on_hand,
+    build_stock_detail,
+    validate_outputs,
+)
 from planning_v2.schemas import CONFIRMED_OUTPUT_OBJECTS, PENDING_OUTPUT_OBJECTS
 
 
@@ -97,6 +104,46 @@ class OnboardingCsvTests(unittest.TestCase):
         self.assertEqual(list(out["partCode"]), ["A1", "A1"])
         self.assertEqual(list(out["quantityUsed"]), [2, 1])
         self.assertEqual(out.loc[0, "partsUsedDateTime"], "2026-02-01")
+
+    def test_template_purchase_orders_maps_sap_po_lines_and_receipts(self) -> None:
+        source = pd.DataFrame(
+            {
+                "PurchaseOrderNumber": [50002190, 50002189, 50002188],
+                "DocStatus": ["O", "C", "O"],
+                "Canceled": ["N", "N", "Y"],
+                "CreationDateTime": ["20260507", "20260506", "20260505"],
+                "ApprovalDateTime": ["20260507", "20260506", "20260505"],
+                "ToWarehouseId": ["FUJITSU", "FUJITSU", "ACER"],
+                "VendorId": ["FSC007s", "FSC007s", "VEND1"],
+                "PartNumber": ["0000123", "ABC", "XYZ"],
+                "Quantity": [1, 3, 4],
+                "LineCost": [10.5, 20, 30],
+                "QuantityReceived": [0, 3, 0],
+                "ReceivedDateTime": ["", "20260507", ""],
+            }
+        )
+        out = build_template_purchase_orders(
+            source,
+            [
+                "purchaseOrderNumber",
+                "purchaseOrderStatus",
+                "creationDateTime",
+                "approvalDateTime",
+                "toWarehouseId",
+                "vendorId",
+                "partNumber",
+                "quantity",
+                "lineCost",
+                "quantityReceived",
+                "receivedDateTime",
+                "demandStatus",
+            ],
+        )
+        self.assertEqual(list(out["purchaseOrderStatus"]), ["Accepted", "Fulfilled", "Cancelled"])
+        self.assertEqual(out.loc[0, "creationDateTime"], "2026-05-07")
+        self.assertEqual(out.loc[0, "partNumber"], "123")
+        self.assertEqual(out.loc[1, "receivedDateTime"], "2026-05-07")
+        self.assertEqual(out.loc[0, "demandStatus"], "")
 
     def test_validation_flags_missing_confirmed_csv_columns(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -9,7 +9,7 @@ import pandas as pd
 
 from planning_v2.config import PlanningConfig, get_config
 from planning_v2.schemas import CONFIRMED_OUTPUT_OBJECTS, PENDING_OUTPUT_OBJECTS
-from planning_v2.sap_extracts import fetch_live_template_sources
+from planning_v2.sap_extracts import fetch_live_purchase_orders, fetch_live_template_sources
 from planning_v2.template_specs import template_columns
 
 
@@ -40,6 +40,41 @@ POPULATED_TEMPLATE_FIELDS = {
         "quantityUsed": "Stock Audit Report 3Y:absolute Quantity for negative DN rows",
         "partsUsedDateTime": "Stock Audit Report 3Y:Posting Date",
     },
+    "PurchaseOrders": {
+        "purchaseOrderNumber": "SAP Service Layer SQLQueries:OPOR.DocNum",
+        "purchaseOrderStatus": "SAP Service Layer SQLQueries:OPOR.DocStatus/CANCELED mapped to template status",
+        "creationDateTime": "SAP Service Layer SQLQueries:OPOR.CreateDate",
+        "approvalDateTime": "SAP Service Layer SQLQueries:OPOR.DocDate",
+        "toWarehouseId": "SAP Service Layer SQLQueries:POR1.WhsCode",
+        "vendorId": "SAP Service Layer SQLQueries:OPOR.CardCode",
+        "partNumber": "SAP Service Layer SQLQueries:POR1.ItemCode",
+        "quantity": "SAP Service Layer SQLQueries:POR1.Quantity",
+        "lineCost": "SAP Service Layer SQLQueries:POR1.LineTotal",
+        "quantityReceived": "SAP Service Layer SQLQueries:PDN1.Quantity summed by PO line",
+        "receivedDateTime": "SAP Service Layer SQLQueries:OPDN.DocDate max by PO line",
+    },
+}
+
+OUT_OF_SCOPE_TEMPLATE_FIELDS = {
+    ("ActionGroups", "actionGroupId"),
+    ("ActionGroups", "nodeId"),
+    ("ActionGroups", "actionGroupDescription"),
+    ("ActionGroups", "assignAnySkill"),
+    ("ActionGroups", "isUsed"),
+    ("ActionGroups", "isObsolete"),
+    ("Employees", "actionGroupId"),
+    ("InventoryTransfers", "loClass"),
+    ("PartCost", "averageRepairCost"),
+    ("Parts", "isService"),
+    ("Parts", "isTool"),
+    ("Parts", "isSmallPart"),
+    ("PartsUsage", "requestId"),
+    ("PurchaseOrders", "customerId"),
+    ("PurchaseOrders", "requestTicketDateTime"),
+    ("PurchaseOrders", "isResolved"),
+    ("Warehouses", "nodeId"),
+    ("Warehouses", "isRepairWarehouse"),
+    ("Warehouses", "isBootStockable"),
 }
 
 
@@ -86,6 +121,7 @@ def generate_onboarding_csvs(cfg: PlanningConfig, out_dir: Path) -> list[Path]:
     template_dir.mkdir(parents=True, exist_ok=True)
 
     parts, warehouses, inventory = fetch_live_template_sources(cfg)
+    purchase_orders = fetch_live_purchase_orders(cfg)
     usage = _read_stock_audit(_stock_audit_3y_path(cfg))
     stock_flow = pd.DataFrame()
     customers = pd.DataFrame()
@@ -94,7 +130,7 @@ def generate_onboarding_csvs(cfg: PlanningConfig, out_dir: Path) -> list[Path]:
 
     written: list[Path] = []
     templates = template_columns(cfg.samples_dir)
-    outputs = build_template_outputs(templates, inventory, usage, stock_flow, warehouses, customers, parts, spi, masters)
+    outputs = build_template_outputs(templates, inventory, usage, stock_flow, warehouses, customers, parts, spi, masters, purchase_orders)
 
     for object_name, df in outputs.items():
         written.append(_write_csv(df, csv_dir / f"{object_name}.csv"))
@@ -114,6 +150,7 @@ def build_template_outputs(
     parts: pd.DataFrame,
     spi: pd.DataFrame,
     masters: pd.DataFrame | None = None,
+    purchase_orders: pd.DataFrame | None = None,
 ) -> dict[str, pd.DataFrame]:
     outputs: dict[str, pd.DataFrame] = {}
     for object_name, columns in templates.items():
@@ -127,6 +164,11 @@ def build_template_outputs(
             outputs[object_name] = build_template_customers(customers, columns)
         elif object_name == "PartsUsage":
             outputs[object_name] = build_template_parts_usage(usage, columns)
+        elif object_name == "PurchaseOrders":
+            outputs[object_name] = build_template_purchase_orders(
+                purchase_orders if purchase_orders is not None else pd.DataFrame(),
+                columns,
+            )
         else:
             outputs[object_name] = pd.DataFrame(columns=columns)
     return outputs
@@ -176,6 +218,18 @@ def _part_key(value: object) -> str:
     if text.isdigit():
         return text.lstrip("0") or "0"
     return text.upper()
+
+
+def _sap_date(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    parsed = pd.to_datetime(text, format="%Y%m%d", errors="coerce")
+    if pd.isna(parsed):
+        parsed = pd.to_datetime(text, errors="coerce")
+    if pd.isna(parsed):
+        return ""
+    return parsed.strftime("%Y-%m-%d")
 
 
 def _spi_main_alt_lookup(spi: pd.DataFrame) -> dict[str, str]:
@@ -281,6 +335,40 @@ def build_template_parts_usage(usage: pd.DataFrame, columns: list[str]) -> pd.Da
     return out.drop_duplicates(keep="first")
 
 
+def build_template_purchase_orders(purchase_orders: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+    if purchase_orders.empty:
+        return pd.DataFrame(columns=columns)
+    source = purchase_orders.copy().reset_index(drop=True)
+    out = _blank_template(columns, len(source))
+    if "purchaseOrderNumber" in out.columns:
+        out["purchaseOrderNumber"] = _col(source, "PurchaseOrderNumber").astype(str).str.strip()
+    if "purchaseOrderStatus" in out.columns:
+        canceled = _col(source, "Canceled").astype(str).str.upper().eq("Y")
+        doc_status = _col(source, "DocStatus").astype(str).str.upper()
+        out["purchaseOrderStatus"] = "Accepted"
+        out.loc[doc_status.eq("C"), "purchaseOrderStatus"] = "Fulfilled"
+        out.loc[canceled, "purchaseOrderStatus"] = "Cancelled"
+    if "creationDateTime" in out.columns:
+        out["creationDateTime"] = _col(source, "CreationDateTime").map(_sap_date)
+    if "approvalDateTime" in out.columns:
+        out["approvalDateTime"] = _col(source, "ApprovalDateTime").map(_sap_date)
+    if "toWarehouseId" in out.columns:
+        out["toWarehouseId"] = _col(source, "ToWarehouseId")
+    if "vendorId" in out.columns:
+        out["vendorId"] = _col(source, "VendorId")
+    if "partNumber" in out.columns:
+        out["partNumber"] = _col(source, "PartNumber").map(_part_key)
+    if "quantity" in out.columns:
+        out["quantity"] = _to_number(_col(source, "Quantity"))
+    if "lineCost" in out.columns:
+        out["lineCost"] = _to_number(_col(source, "LineCost"))
+    if "quantityReceived" in out.columns:
+        out["quantityReceived"] = _to_number(_col(source, "QuantityReceived"))
+    if "receivedDateTime" in out.columns:
+        out["receivedDateTime"] = _col(source, "ReceivedDateTime").map(_sap_date)
+    return out.drop_duplicates(keep="first")
+
+
 def build_template_warehouses(warehouses: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
     if warehouses.empty:
         return pd.DataFrame(columns=columns)
@@ -334,24 +422,32 @@ def validate_template_outputs(
     rows = []
     for object_name, columns in templates.items():
         df = outputs.get(object_name, pd.DataFrame(columns=columns))
-        populated_fields = [
+        scoped_columns = [
             column
             for column in columns
+            if (object_name, column) not in OUT_OF_SCOPE_TEMPLATE_FIELDS
+        ]
+        populated_fields = [
+            column
+            for column in scoped_columns
             if column in df.columns and len(df) > 0 and df[column].astype(str).str.strip().ne("").any()
         ]
-        missing = [column for column in columns if column not in df.columns]
+        missing = [column for column in scoped_columns if column not in df.columns]
         if missing:
             status = "FAIL"
             notes = f"Missing template columns: {', '.join(missing)}"
+        elif not scoped_columns:
+            status = "OUT_OF_SCOPE"
+            notes = "All template fields are out of CoCre8 v1 scope."
         elif len(df) == 0:
             status = "PENDING"
             notes = "Header-only template; no confirmed CoCre8 source yet."
-        elif len(populated_fields) == len(columns):
+        elif len(populated_fields) == len(scoped_columns):
             status = "PASS"
-            notes = "All template fields populated."
+            notes = "All in-scope template fields populated."
         else:
             status = "PARTIAL"
-            blank_fields = [column for column in columns if column not in populated_fields]
+            blank_fields = [column for column in scoped_columns if column not in populated_fields]
             notes = "Populated: " + ", ".join(populated_fields)
             if blank_fields:
                 notes += " | Needs source confirmation: " + ", ".join(blank_fields)

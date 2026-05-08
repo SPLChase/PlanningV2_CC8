@@ -5,7 +5,13 @@ from datetime import date
 from pathlib import Path
 
 from planning_v2.config import PlanningConfig
-from planning_v2.sap_queries import build_open_po_sql, build_stock_sql, build_template_stock_on_hand_sql
+from planning_v2.sap_queries import (
+    build_open_po_sql,
+    build_purchase_order_lines_sql,
+    build_purchase_order_receipts_sql,
+    build_stock_sql,
+    build_template_stock_on_hand_sql,
+)
 
 
 def _cfg() -> PlanningConfig:
@@ -47,6 +53,14 @@ class SapQueryTests(unittest.TestCase):
         sql = build_template_stock_on_hand_sql()
         for token in ['OITW', 'OITM', '"OnHand"', '"IsCommited"', '"OnOrder"', '"MinStock"', '"MaxStock"', '"AvgPrice"']:
             self.assertIn(token, sql)
+
+    def test_purchase_order_queries_use_po_and_grpo_tables(self) -> None:
+        line_sql = build_purchase_order_lines_sql()
+        receipt_sql = build_purchase_order_receipts_sql()
+        for token in ["OPOR", "POR1", '"DocNum"', '"CardCode"', '"LineTotal"']:
+            self.assertIn(token, line_sql)
+        for token in ["OPDN", "PDN1", '"BaseType" = 22', "SUM", "MAX"]:
+            self.assertIn(token, receipt_sql)
 
 
 if __name__ == "__main__":
