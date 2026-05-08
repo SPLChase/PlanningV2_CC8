@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from planning_v2.onboarding_csvs import build_template_parts, build_template_stock_on_hand, build_stock_detail, validate_outputs
+from planning_v2.onboarding_csvs import build_template_parts, build_template_parts_usage, build_template_stock_on_hand, build_stock_detail, validate_outputs
 from planning_v2.schemas import CONFIRMED_OUTPUT_OBJECTS, PENDING_OUTPUT_OBJECTS
 
 
@@ -52,6 +52,12 @@ class OnboardingCsvTests(unittest.TestCase):
         self.assertEqual(out.loc[0, "isPrimary"], "")
         self.assertEqual(out.loc[0, "primaryPartNumber"], "")
 
+    def test_template_parts_populates_spl_master_from_reference_masters(self) -> None:
+        parts = pd.DataFrame({"ItemNo": ["34076947"], "ItemDescription": ["Part A"]})
+        masters = pd.DataFrame({"SPL Master": ["SPL8000000"], "Items linked": ["34076947;38049457"]})
+        out = build_template_parts(parts, ["SPLMaster", "PartNumber", "description"], masters=masters)
+        self.assertEqual(out.loc[0, "SPLMaster"], "SPL8000000")
+
     def test_template_parts_populates_primary_from_spi_main_alternative(self) -> None:
         parts = pd.DataFrame(
             {
@@ -71,6 +77,26 @@ class OnboardingCsvTests(unittest.TestCase):
         self.assertEqual(out.loc[0, "isPrimary"], "True")
         self.assertEqual(out.loc[1, "isPrimary"], "False")
         self.assertEqual(out.loc[1, "primaryPartNumber"], "34076947")
+
+    def test_template_parts_usage_uses_negative_dn_rows_only(self) -> None:
+        usage = pd.DataFrame(
+            {
+                "Item No.": ["A1", "", "B2", "C3"],
+                "Description": ["Part A", "", "Part B", "Part C"],
+                "Posting Date": ["01/02/26", "02/02/26", "03/02/26", "04/02/26"],
+                "Document": ["DN 1", "DN 2", "IM 1", "DN 3"],
+                "Whse": ["WH1", "WH1", "WH2", "WH3"],
+                "Quantity": ["-2", "-1", "-3", "4"],
+            }
+        )
+        out = build_template_parts_usage(
+            usage,
+            ["orderNumber", "partCode", "Warehouse", "quantityUsed", "partsUsedDateTime", "orderType"],
+        )
+        self.assertEqual(list(out["orderNumber"]), ["DN 1", "DN 2"])
+        self.assertEqual(list(out["partCode"]), ["A1", "A1"])
+        self.assertEqual(list(out["quantityUsed"]), [2, 1])
+        self.assertEqual(out.loc[0, "partsUsedDateTime"], "2026-02-01")
 
     def test_validation_flags_missing_confirmed_csv_columns(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

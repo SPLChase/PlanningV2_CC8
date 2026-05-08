@@ -15,6 +15,7 @@ from planning_v2.template_specs import template_columns
 
 POPULATED_TEMPLATE_FIELDS = {
     "Parts": {
+        "SPLMaster": "Reference masters.csv:SPL Master by linked item",
         "PartNumber": "SAP Service Layer SQLQueries:OITM.ItemCode",
         "isPrimary": "SPI_DATA.csv:Main alternative par equals material/part number",
         "primaryPartNumber": "SPI_DATA.csv:Main alternative par",
@@ -32,6 +33,13 @@ POPULATED_TEMPLATE_FIELDS = {
         "quantityInbound": "SAP Service Layer SQLQueries:OITW.OnOrder",
     },
     "Customers": {},
+    "PartsUsage": {
+        "orderNumber": "Stock Audit Report 3Y:Document for DN rows",
+        "partCode": "Stock Audit Report 3Y:Item No.",
+        "Warehouse": "Stock Audit Report 3Y:Whse",
+        "quantityUsed": "Stock Audit Report 3Y:absolute Quantity for negative DN rows",
+        "partsUsedDateTime": "Stock Audit Report 3Y:Posting Date",
+    },
 }
 
 
@@ -78,14 +86,15 @@ def generate_onboarding_csvs(cfg: PlanningConfig, out_dir: Path) -> list[Path]:
     template_dir.mkdir(parents=True, exist_ok=True)
 
     parts, warehouses, inventory = fetch_live_template_sources(cfg)
-    usage = pd.DataFrame()
+    usage = _read_stock_audit(_stock_audit_3y_path(cfg))
     stock_flow = pd.DataFrame()
     customers = pd.DataFrame()
+    masters = _read_masters(cfg.reference_dir / "masters.csv")
     spi = _read_spi(cfg.exco_source_dir / "SPI_DATA.csv")
 
     written: list[Path] = []
     templates = template_columns(cfg.samples_dir)
-    outputs = build_template_outputs(templates, inventory, usage, stock_flow, warehouses, customers, parts, spi)
+    outputs = build_template_outputs(templates, inventory, usage, stock_flow, warehouses, customers, parts, spi, masters)
 
     for object_name, df in outputs.items():
         written.append(_write_csv(df, csv_dir / f"{object_name}.csv"))
@@ -104,17 +113,20 @@ def build_template_outputs(
     customers: pd.DataFrame,
     parts: pd.DataFrame,
     spi: pd.DataFrame,
+    masters: pd.DataFrame | None = None,
 ) -> dict[str, pd.DataFrame]:
     outputs: dict[str, pd.DataFrame] = {}
     for object_name, columns in templates.items():
         if object_name == "Parts":
-            outputs[object_name] = build_template_parts(parts, columns, spi)
+            outputs[object_name] = build_template_parts(parts, columns, spi, masters)
         elif object_name == "Warehouses":
             outputs[object_name] = build_template_warehouses(warehouses, columns)
         elif object_name == "WarehouseStockOnHand":
             outputs[object_name] = build_template_stock_on_hand(inventory, columns)
         elif object_name == "Customers":
             outputs[object_name] = build_template_customers(customers, columns)
+        elif object_name == "PartsUsage":
+            outputs[object_name] = build_template_parts_usage(usage, columns)
         else:
             outputs[object_name] = pd.DataFrame(columns=columns)
     return outputs
@@ -128,6 +140,35 @@ def _read_spi(path: Path) -> pd.DataFrame:
     if not path.exists():
         return pd.DataFrame()
     return pd.read_csv(path, sep=";", dtype=str, encoding="utf-8-sig").fillna("")
+
+
+def _read_masters(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        return pd.DataFrame(columns=["SPL Master", "Items linked"])
+    return pd.read_csv(path, dtype=str, encoding="utf-8-sig").fillna("")
+
+
+def _stock_audit_3y_path(cfg: PlanningConfig) -> Path:
+    candidates = [
+        cfg.exco_source_dir / "Stock Audit Report 3Y.txt",
+        cfg.cc8_source_root / "Exco" / "April_refresh" / "Stock Audit Report 3Y.txt",
+        cfg.exco_source_dir / "Stock Audit Report.txt",
+    ]
+    for path in candidates:
+        if path.exists():
+            return path
+    return candidates[0]
+
+
+def _read_stock_audit(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        return pd.DataFrame()
+    for encoding in ["utf-8-sig", "utf-16", "cp1252", "latin-1"]:
+        try:
+            return pd.read_csv(path, sep="\t", dtype=str, encoding=encoding, engine="python", on_bad_lines="skip").fillna("")
+        except UnicodeDecodeError:
+            continue
+    return pd.DataFrame()
 
 
 def _part_key(value: object) -> str:
@@ -154,16 +195,37 @@ def _spi_main_alt_lookup(spi: pd.DataFrame) -> dict[str, str]:
     return lookup
 
 
-def build_template_parts(parts: pd.DataFrame, columns: list[str], spi: pd.DataFrame | None = None) -> pd.DataFrame:
+def _master_lookup(masters: pd.DataFrame | None) -> dict[str, str]:
+    if masters is None or masters.empty or "SPL Master" not in masters.columns or "Items linked" not in masters.columns:
+        return {}
+    lookup: dict[str, str] = {}
+    for _, row in masters.iterrows():
+        master = str(row.get("SPL Master", "") or "").strip()
+        if not master:
+            continue
+        for item in str(row.get("Items linked", "") or "").split(";"):
+            key = _part_key(item)
+            if key and key not in lookup:
+                lookup[key] = master
+    return lookup
+
+
+def build_template_parts(
+    parts: pd.DataFrame,
+    columns: list[str],
+    spi: pd.DataFrame | None = None,
+    masters: pd.DataFrame | None = None,
+) -> pd.DataFrame:
     if parts.empty:
         return pd.DataFrame(columns=columns)
     spi = spi if spi is not None else pd.DataFrame()
     main_alt_by_part = _spi_main_alt_lookup(spi)
+    master_by_part = _master_lookup(masters)
     out = _blank_template(columns, len(parts))
     item_keys = _col(parts, "ItemNo").map(_part_key)
     main_alt = item_keys.map(main_alt_by_part).fillna("")
     if "SPLMaster" in out.columns:
-        out["SPLMaster"] = ""
+        out["SPLMaster"] = item_keys.map(master_by_part).fillna("")
     if "PartNumber" in out.columns:
         out["PartNumber"] = _col(parts, "ItemNo")
     if "primaryPartNumber" in out.columns:
@@ -179,6 +241,44 @@ def build_template_parts(parts: pd.DataFrame, columns: list[str], spi: pd.DataFr
             _col(parts, "DisplayDescription"),
         )
     return out.drop_duplicates(subset=[col for col in ["SPLMaster", "PartNumber"] if col in out.columns], keep="first")
+
+
+def build_template_parts_usage(usage: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+    if usage.empty:
+        return pd.DataFrame(columns=columns)
+    work = usage.copy()
+    for column in ["Item No.", "Description"]:
+        if column in work.columns:
+            work[column] = work[column].replace(r"^\s*$", pd.NA, regex=True).ffill().fillna("")
+    for column in ["Document", "Posting Date", "Whse", "Quantity"]:
+        if column not in work.columns:
+            work[column] = ""
+    work["Document"] = work["Document"].astype(str).str.strip()
+    work["QuantityNum"] = _to_number(work["Quantity"])
+    dn = work[
+        work["Document"].str.startswith("DN ", na=False)
+        & work["Posting Date"].astype(str).str.strip().ne("")
+        & work["Item No."].astype(str).str.strip().ne("")
+        & work["QuantityNum"].lt(0)
+    ].copy().reset_index(drop=True)
+    if dn.empty:
+        return pd.DataFrame(columns=columns)
+    out = _blank_template(columns, len(dn))
+    if "orderNumber" in out.columns:
+        out["orderNumber"] = dn["Document"].astype(str).str.strip()
+    if "partCode" in out.columns:
+        out["partCode"] = dn["Item No."].map(_part_key)
+    if "Warehouse" in out.columns:
+        out["Warehouse"] = dn["Whse"].astype(str).str.strip()
+    if "quantityUsed" in out.columns:
+        out["quantityUsed"] = dn["QuantityNum"].abs()
+    if "partsUsedDateTime" in out.columns:
+        parsed = pd.to_datetime(dn["Posting Date"].astype(str).str.strip(), format="%d/%m/%y", errors="coerce")
+        fallback = parsed.isna()
+        if fallback.any():
+            parsed.loc[fallback] = pd.to_datetime(dn.loc[fallback, "Posting Date"].astype(str).str.strip(), format="%d/%m/%Y", errors="coerce")
+        out["partsUsedDateTime"] = parsed.dt.strftime("%Y-%m-%d").fillna("")
+    return out.drop_duplicates(keep="first")
 
 
 def build_template_warehouses(warehouses: pd.DataFrame, columns: list[str]) -> pd.DataFrame:

@@ -19,7 +19,8 @@ from planning_v2.template_specs import load_template_fields
 from planning_v2.onboarding_csvs import POPULATED_TEMPLATE_FIELDS
 
 
-TARGET_FIELDS_FILE = "SPL Planning Data Fields.xlsx"
+TARGET_FIELDS_FILE = "SPL Planning Data Fields edited.xlsx"
+FALLBACK_TARGET_FIELDS_FILE = "SPL Planning Data Fields.xlsx"
 
 STATUS_CONFIRMED = "Confirmed"
 STATUS_REVIEW = "Review required"
@@ -119,7 +120,9 @@ def normalize_name(value: object) -> str:
 def parse_target_fields(reference_dir: Path) -> list[TargetField]:
     path = reference_dir / TARGET_FIELDS_FILE
     if not path.exists():
-        raise FileNotFoundError(f"Missing target field workbook: {path}")
+        path = reference_dir / FALLBACK_TARGET_FIELDS_FILE
+    if not path.exists():
+        raise FileNotFoundError(f"Missing target field workbook: {reference_dir / TARGET_FIELDS_FILE}")
 
     workbook = load_workbook(path, read_only=True, data_only=True)
     worksheet = workbook.active
@@ -165,7 +168,11 @@ def parse_target_fields(reference_dir: Path) -> list[TargetField]:
 
 def is_v1_target(field: TargetField) -> bool:
     relevance = field.cc8_relevant.lower()
+    if relevance.startswith("no"):
+        return False
     if relevance.startswith("yes") or relevance.startswith("maybe"):
+        return True
+    if relevance.startswith("not sure"):
         return True
     if field.context_area in {"Stock detail", "warehouse details"}:
         return field.used_by_spl.upper() == "YES"
