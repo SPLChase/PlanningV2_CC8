@@ -218,3 +218,92 @@ def purchase_order_ticket_matches(
                 }
             )
     return pd.DataFrame(rows, columns=columns).drop_duplicates()
+
+
+def purchase_order_reconciliation(
+    purchase_orders: pd.DataFrame,
+    issue_tracker: pd.DataFrame,
+    masters: pd.DataFrame | None,
+) -> pd.DataFrame:
+    columns = [
+        "TicketPurchaseOrder",
+        "SapPurchaseOrder",
+        "TicketPartNumber",
+        "TicketDispatchPartNumber",
+        "SapPartNumber",
+        "TicketSPLMaster",
+        "SapSPLMaster",
+        "CallNumber",
+        "MSConvoID",
+        "ReplenishStatus",
+        "MatchStatus",
+        "Evidence",
+    ]
+    if issue_tracker.empty:
+        return pd.DataFrame(columns=columns)
+
+    by_part = master_lookup(masters)
+    sap = purchase_orders.copy() if not purchase_orders.empty else pd.DataFrame()
+    if sap.empty:
+        sap = pd.DataFrame(columns=["PurchaseOrderNumber", "PartNumber"])
+    sap["SapPurchaseOrderKey"] = sap.get("PurchaseOrderNumber", pd.Series([""] * len(sap))).map(po_key)
+    sap["SapPartKey"] = sap.get("PartNumber", pd.Series([""] * len(sap))).map(part_key)
+    sap["SapSPLMaster"] = sap["SapPartKey"].map(by_part).fillna("")
+
+    tracker = issue_tracker[issue_tracker["PurchaseOrderKey"].astype(str).str.strip().ne("")].copy()
+    rows: list[dict[str, str]] = []
+    for _, ticket in tracker.iterrows():
+        ticket_po = clean_text(ticket.get("PurchaseOrderKey"))
+        ticket_part = part_key(ticket.get("Part Nr"))
+        ticket_dispatch = part_key(ticket.get("DispatchPartNo"))
+        ticket_master = clean_text(ticket.get("SPLMaster")) or by_part.get(ticket_part, "") or by_part.get(ticket_dispatch, "")
+        candidates = sap[sap["SapPurchaseOrderKey"].eq(ticket_po)]
+        if candidates.empty:
+            rows.append(
+                {
+                    "TicketPurchaseOrder": ticket_po,
+                    "SapPurchaseOrder": "",
+                    "TicketPartNumber": ticket_part,
+                    "TicketDispatchPartNumber": ticket_dispatch,
+                    "SapPartNumber": "",
+                    "TicketSPLMaster": ticket_master,
+                    "SapSPLMaster": "",
+                    "CallNumber": clean_text(ticket.get("Call Number")),
+                    "MSConvoID": clean_text(ticket.get("MSConvoID")),
+                    "ReplenishStatus": clean_text(ticket.get("ReplenishStatus")),
+                    "MatchStatus": "No matching SAP PO number",
+                    "Evidence": "HelpDesk PurchaseOrder filename stem does not match any SAP OPOR.DocNum returned by the live extract.",
+                }
+            )
+            continue
+        matched_any_part = False
+        for _, sap_row in candidates.iterrows():
+            sap_part = clean_text(sap_row.get("SapPartKey"))
+            sap_master = clean_text(sap_row.get("SapSPLMaster"))
+            if sap_part and sap_part in {ticket_part, ticket_dispatch}:
+                status = "Matched SAP PO and exact part"
+                matched_any_part = True
+            elif sap_master and ticket_master and sap_master == ticket_master:
+                status = "Matched SAP PO and SPL Master"
+                matched_any_part = True
+            else:
+                status = "SAP PO matched; part/master mismatch"
+            rows.append(
+                {
+                    "TicketPurchaseOrder": ticket_po,
+                    "SapPurchaseOrder": clean_text(sap_row.get("PurchaseOrderNumber")),
+                    "TicketPartNumber": ticket_part,
+                    "TicketDispatchPartNumber": ticket_dispatch,
+                    "SapPartNumber": sap_part,
+                    "TicketSPLMaster": ticket_master,
+                    "SapSPLMaster": sap_master,
+                    "CallNumber": clean_text(ticket.get("Call Number")),
+                    "MSConvoID": clean_text(ticket.get("MSConvoID")),
+                    "ReplenishStatus": clean_text(ticket.get("ReplenishStatus")),
+                    "MatchStatus": status,
+                    "Evidence": "SAP PO number equals HelpDesk PurchaseOrder filename stem; part/master checked separately.",
+                }
+            )
+        if not matched_any_part and not candidates.empty:
+            continue
+    return pd.DataFrame(rows, columns=columns).drop_duplicates()

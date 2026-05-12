@@ -12,6 +12,7 @@ from planning_v2.issue_tracker import (
     issue_tracker_evidence_rows,
     master_lookup,
     part_key,
+    purchase_order_reconciliation,
     purchase_order_ticket_matches,
     read_issue_tracker,
 )
@@ -59,7 +60,6 @@ POPULATED_TEMPLATE_FIELDS = {
         "lineCost": "SAP Service Layer SQLQueries:POR1.LineTotal",
         "quantityReceived": "SAP Service Layer SQLQueries:PDN1.Quantity summed by PO line",
         "receivedDateTime": "SAP Service Layer SQLQueries:OPDN.DocDate max by PO line",
-        "demandStatus": "CoCre8 HelpDesk issue tracker:ReplenishStatus when exact PO plus exact part/SPL Master evidence exists",
     },
 }
 
@@ -512,6 +512,7 @@ def write_review_evidence(
     files = [
         (build_parts_usage_evidence(usage, masters), evidence_dir / "PartsUsage_SPLMaster_Evidence.csv"),
         (build_purchase_order_evidence(purchase_orders, masters, issue_tracker), evidence_dir / "PurchaseOrders_SPLMaster_Evidence.csv"),
+        (purchase_order_reconciliation(purchase_orders, issue_tracker, masters), evidence_dir / "PurchaseOrders_Ticket_Reconciliation.csv"),
         (issue_tracker_evidence_rows(issue_tracker, masters), evidence_dir / "IssueTracker_Line_Evidence.csv"),
     ]
     return [_write_csv(df, path) for df, path in files]

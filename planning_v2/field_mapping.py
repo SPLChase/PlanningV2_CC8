@@ -522,6 +522,9 @@ def template_field_rows(cfg: PlanningConfig) -> list[dict[str, str]]:
                 elif field.output_object == "WarehouseStockOnHand" and field.field_name in STOCK_ON_HAND_TEMPLATE_NOTES:
                     status = STATUS_NOT_AVAILABLE if field.field_name in {"inventoryType", "quantityOutbound"} else STATUS_INVESTIGATE_EXTERNAL
                     notes = STOCK_ON_HAND_TEMPLATE_NOTES[field.field_name]
+                elif field.output_object == "PurchaseOrders" and field.field_name == "demandStatus":
+                    status = STATUS_REVIEW
+                    notes = "Conditional HelpDesk enrichment. Use ReplenishStatus only when PurchaseOrder filename stem matches SAP OPOR.DocNum and part/SPL Master evidence also matches; current export needs reconciliation."
                 else:
                     notes = "Left blank in generated template CSV until source and semantics are confirmed."
             rows.append(

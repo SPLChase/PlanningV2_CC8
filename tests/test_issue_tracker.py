@@ -7,6 +7,7 @@ import pandas as pd
 from planning_v2.issue_tracker import (
     issue_tracker_evidence_rows,
     po_key,
+    purchase_order_reconciliation,
     purchase_order_ticket_matches,
 )
 
@@ -71,6 +72,24 @@ class IssueTrackerTests(unittest.TestCase):
         evidence = issue_tracker_evidence_rows(issue_tracker, pd.DataFrame())
 
         self.assertEqual(evidence.loc[0, "EvidenceStatus"], "Needs SPL Master mapping")
+
+    def test_purchase_order_reconciliation_flags_missing_sap_po_number(self) -> None:
+        purchase_orders = pd.DataFrame({"PurchaseOrderNumber": ["50001"], "PartNumber": ["MAIN1"]})
+        issue_tracker = pd.DataFrame(
+            {
+                "PurchaseOrderKey": ["26PO000031"],
+                "Part Nr": ["MAIN1"],
+                "DispatchPartNo": [""],
+                "SPLMaster": ["SPL1"],
+                "Call Number": ["777"],
+                "MSConvoID": ["thread-1"],
+                "ReplenishStatus": ["Ordered"],
+            }
+        )
+
+        reconciliation = purchase_order_reconciliation(purchase_orders, issue_tracker, pd.DataFrame())
+
+        self.assertEqual(reconciliation.loc[0, "MatchStatus"], "No matching SAP PO number")
 
 
 if __name__ == "__main__":

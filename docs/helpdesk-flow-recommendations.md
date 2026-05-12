@@ -34,7 +34,7 @@ This avoids treating “closed” as both dispatched and replenished. In the sam
 
 - Use `MSConvoID + CallNumber + line part number` as the primary ticket-line identity.
 - Use PO enrichment only when the PO number is explicit and the SAP PO line part either matches the ticket part exactly or maps to the same `SPLMaster`.
-- Current ticket PO values look like CoCre8 approval attachment numbers, for example `26PO000031.pdf`, while SAP purchase orders use SAP document numbers. Store both identifiers separately so they can be reconciled instead of assuming they are the same number.
+- Current ticket PO values are stored as attachment names, for example `26PO000031.pdf`; the Planning import should use the filename stem, for example `26PO000031`, only as reconciliation evidence against SAP `OPOR.DocNum`. If SAP does not contain the same PO number, flag it as a data-quality issue rather than replacing the SAP PO source.
 - Keep alternative-part cases visible: requested, dispatched, and replenished parts may differ even when they belong to the same planning master.
 - Add a review queue for unmatched PO/order-confirmation emails instead of applying fuzzy matching automatically.
 
