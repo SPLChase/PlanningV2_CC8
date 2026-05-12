@@ -18,6 +18,8 @@ data/output/
 ~$*.xlsx
 !Reference/
 !Reference/*.xlsx
+Reference/HelpdeskFlow.txt
+Reference/helpdesk_emails/
 !Samples/
 Samples/*
 !Samples/Templates raw.xlsx

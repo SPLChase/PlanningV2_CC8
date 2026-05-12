@@ -8,6 +8,13 @@ from pathlib import Path
 import pandas as pd
 
 from planning_v2.config import PlanningConfig, get_config
+from planning_v2.issue_tracker import (
+    issue_tracker_evidence_rows,
+    master_lookup,
+    part_key,
+    purchase_order_ticket_matches,
+    read_issue_tracker,
+)
 from planning_v2.schemas import CONFIRMED_OUTPUT_OBJECTS, PENDING_OUTPUT_OBJECTS
 from planning_v2.sap_extracts import fetch_live_purchase_orders, fetch_live_template_sources
 from planning_v2.template_specs import template_columns
@@ -52,6 +59,7 @@ POPULATED_TEMPLATE_FIELDS = {
         "lineCost": "SAP Service Layer SQLQueries:POR1.LineTotal",
         "quantityReceived": "SAP Service Layer SQLQueries:PDN1.Quantity summed by PO line",
         "receivedDateTime": "SAP Service Layer SQLQueries:OPDN.DocDate max by PO line",
+        "demandStatus": "CoCre8 HelpDesk issue tracker:ReplenishStatus when exact PO plus exact part/SPL Master evidence exists",
     },
 }
 
@@ -127,16 +135,30 @@ def generate_onboarding_csvs(cfg: PlanningConfig, out_dir: Path) -> list[Path]:
     customers = pd.DataFrame()
     masters = _read_masters(cfg.reference_dir / "masters.csv")
     spi = _read_spi(cfg.exco_source_dir / "SPI_DATA.csv")
+    issue_tracker = read_issue_tracker(cfg.issue_tracker_csv)
 
     written: list[Path] = []
     templates = template_columns(cfg.samples_dir)
-    outputs = build_template_outputs(templates, inventory, usage, stock_flow, warehouses, customers, parts, spi, masters, purchase_orders)
+    outputs = build_template_outputs(
+        templates,
+        inventory,
+        usage,
+        stock_flow,
+        warehouses,
+        customers,
+        parts,
+        spi,
+        masters,
+        purchase_orders,
+        issue_tracker,
+    )
 
     for object_name, df in outputs.items():
         written.append(_write_csv(df, csv_dir / f"{object_name}.csv"))
 
     validation = validate_template_outputs(csv_dir, outputs, templates)
     written.append(_write_csv(validation, out_dir.parent / "validation_summary.csv"))
+    written.extend(write_review_evidence(out_dir.parent / "review_evidence", usage, purchase_orders, issue_tracker, masters))
     return written
 
 
@@ -151,6 +173,7 @@ def build_template_outputs(
     spi: pd.DataFrame,
     masters: pd.DataFrame | None = None,
     purchase_orders: pd.DataFrame | None = None,
+    issue_tracker: pd.DataFrame | None = None,
 ) -> dict[str, pd.DataFrame]:
     outputs: dict[str, pd.DataFrame] = {}
     for object_name, columns in templates.items():
@@ -163,11 +186,13 @@ def build_template_outputs(
         elif object_name == "Customers":
             outputs[object_name] = build_template_customers(customers, columns)
         elif object_name == "PartsUsage":
-            outputs[object_name] = build_template_parts_usage(usage, columns)
+            outputs[object_name] = build_template_parts_usage(usage, columns, masters)
         elif object_name == "PurchaseOrders":
             outputs[object_name] = build_template_purchase_orders(
                 purchase_orders if purchase_orders is not None else pd.DataFrame(),
                 columns,
+                masters,
+                issue_tracker,
             )
         else:
             outputs[object_name] = pd.DataFrame(columns=columns)
@@ -214,10 +239,7 @@ def _read_stock_audit(path: Path) -> pd.DataFrame:
 
 
 def _part_key(value: object) -> str:
-    text = str(value or "").strip()
-    if text.isdigit():
-        return text.lstrip("0") or "0"
-    return text.upper()
+    return part_key(value)
 
 
 def _sap_date(value: object) -> str:
@@ -250,18 +272,7 @@ def _spi_main_alt_lookup(spi: pd.DataFrame) -> dict[str, str]:
 
 
 def _master_lookup(masters: pd.DataFrame | None) -> dict[str, str]:
-    if masters is None or masters.empty or "SPL Master" not in masters.columns or "Items linked" not in masters.columns:
-        return {}
-    lookup: dict[str, str] = {}
-    for _, row in masters.iterrows():
-        master = str(row.get("SPL Master", "") or "").strip()
-        if not master:
-            continue
-        for item in str(row.get("Items linked", "") or "").split(";"):
-            key = _part_key(item)
-            if key and key not in lookup:
-                lookup[key] = master
-    return lookup
+    return master_lookup(masters)
 
 
 def build_template_parts(
@@ -297,7 +308,11 @@ def build_template_parts(
     return out.drop_duplicates(subset=[col for col in ["SPLMaster", "PartNumber"] if col in out.columns], keep="first")
 
 
-def build_template_parts_usage(usage: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+def build_template_parts_usage(
+    usage: pd.DataFrame,
+    columns: list[str],
+    masters: pd.DataFrame | None = None,
+) -> pd.DataFrame:
     if usage.empty:
         return pd.DataFrame(columns=columns)
     work = usage.copy()
@@ -335,7 +350,12 @@ def build_template_parts_usage(usage: pd.DataFrame, columns: list[str]) -> pd.Da
     return out.drop_duplicates(keep="first")
 
 
-def build_template_purchase_orders(purchase_orders: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+def build_template_purchase_orders(
+    purchase_orders: pd.DataFrame,
+    columns: list[str],
+    masters: pd.DataFrame | None = None,
+    issue_tracker: pd.DataFrame | None = None,
+) -> pd.DataFrame:
     if purchase_orders.empty:
         return pd.DataFrame(columns=columns)
     source = purchase_orders.copy().reset_index(drop=True)
@@ -366,7 +386,135 @@ def build_template_purchase_orders(purchase_orders: pd.DataFrame, columns: list[
         out["quantityReceived"] = _to_number(_col(source, "QuantityReceived"))
     if "receivedDateTime" in out.columns:
         out["receivedDateTime"] = _col(source, "ReceivedDateTime").map(_sap_date)
+    if "demandStatus" in out.columns and issue_tracker is not None and not issue_tracker.empty:
+        matches = purchase_order_ticket_matches(source, issue_tracker, masters)
+        if not matches.empty:
+            status_by_key = (
+                matches[matches["ReplenishStatus"].astype(str).str.strip().ne("")]
+                .drop_duplicates(subset=["PurchaseOrderNumber", "SapPartNumber"], keep="first")
+                .set_index(["PurchaseOrderNumber", "SapPartNumber"])["ReplenishStatus"]
+                .to_dict()
+            )
+            keys = list(zip(out.get("purchaseOrderNumber", pd.Series([""] * len(out))).map(_part_key), out.get("partNumber", pd.Series([""] * len(out))).map(_part_key)))
+            out["demandStatus"] = [status_by_key.get(key, "") for key in keys]
     return out.drop_duplicates(keep="first")
+
+
+def build_parts_usage_evidence(usage: pd.DataFrame, masters: pd.DataFrame | None) -> pd.DataFrame:
+    columns = [
+        "Source",
+        "orderNumber",
+        "actualPartNumber",
+        "SPLMaster",
+        "Warehouse",
+        "quantityUsed",
+        "partsUsedDateTime",
+        "EvidenceStatus",
+    ]
+    if usage.empty:
+        return pd.DataFrame(columns=columns)
+    template = build_template_parts_usage(
+        usage,
+        ["orderNumber", "partCode", "Warehouse", "quantityUsed", "partsUsedDateTime"],
+        masters,
+    )
+    if template.empty:
+        return pd.DataFrame(columns=columns)
+    by_part = _master_lookup(masters)
+    out = pd.DataFrame(
+        {
+            "Source": "Stock Audit Report 3Y",
+            "orderNumber": template["orderNumber"],
+            "actualPartNumber": template["partCode"],
+            "SPLMaster": template["partCode"].map(by_part).fillna(""),
+            "Warehouse": template["Warehouse"],
+            "quantityUsed": template["quantityUsed"],
+            "partsUsedDateTime": template["partsUsedDateTime"],
+        }
+    )
+    out["EvidenceStatus"] = "Mapped to SPL Master"
+    out.loc[out["SPLMaster"].astype(str).str.strip().eq(""), "EvidenceStatus"] = "Needs SPL Master mapping"
+    return out
+
+
+def build_purchase_order_evidence(
+    purchase_orders: pd.DataFrame,
+    masters: pd.DataFrame | None,
+    issue_tracker: pd.DataFrame | None,
+) -> pd.DataFrame:
+    columns = [
+        "PurchaseOrderNumber",
+        "actualPartNumber",
+        "SPLMaster",
+        "quantity",
+        "quantityReceived",
+        "toWarehouseId",
+        "vendorId",
+        "TicketCallNumber",
+        "TicketMSConvoID",
+        "TicketPartNumber",
+        "TicketSPLMaster",
+        "TicketReplenishStatus",
+        "MatchType",
+        "EvidenceStatus",
+    ]
+    if purchase_orders.empty:
+        return pd.DataFrame(columns=columns)
+    by_part = _master_lookup(masters)
+    source = purchase_orders.copy().reset_index(drop=True)
+    out = pd.DataFrame(
+        {
+            "PurchaseOrderNumber": _col(source, "PurchaseOrderNumber").map(_part_key),
+            "actualPartNumber": _col(source, "PartNumber").map(_part_key),
+            "SPLMaster": _col(source, "PartNumber").map(_part_key).map(by_part).fillna(""),
+            "quantity": _to_number(_col(source, "Quantity")),
+            "quantityReceived": _to_number(_col(source, "QuantityReceived")),
+            "toWarehouseId": _col(source, "ToWarehouseId"),
+            "vendorId": _col(source, "VendorId"),
+        }
+    )
+    out["TicketCallNumber"] = ""
+    out["TicketMSConvoID"] = ""
+    out["TicketPartNumber"] = ""
+    out["TicketSPLMaster"] = ""
+    out["TicketReplenishStatus"] = ""
+    out["MatchType"] = ""
+    out["EvidenceStatus"] = "SAP PO line only"
+    out.loc[out["SPLMaster"].astype(str).str.strip().eq(""), "EvidenceStatus"] = "SAP PO line only; needs SPL Master mapping"
+
+    if issue_tracker is not None and not issue_tracker.empty:
+        matches = purchase_order_ticket_matches(source, issue_tracker, masters)
+        if not matches.empty:
+            first_match = matches.drop_duplicates(subset=["PurchaseOrderNumber", "SapPartNumber"], keep="first")
+            match_lookup = first_match.set_index(["PurchaseOrderNumber", "SapPartNumber"]).to_dict("index")
+            for idx, row in out.iterrows():
+                match = match_lookup.get((row["PurchaseOrderNumber"], row["actualPartNumber"]))
+                if not match:
+                    continue
+                out.at[idx, "TicketCallNumber"] = match["CallNumber"]
+                out.at[idx, "TicketMSConvoID"] = match["MSConvoID"]
+                out.at[idx, "TicketPartNumber"] = match["TicketPartNumber"]
+                out.at[idx, "TicketSPLMaster"] = match["TicketSPLMaster"]
+                out.at[idx, "TicketReplenishStatus"] = match["ReplenishStatus"]
+                out.at[idx, "MatchType"] = match["MatchType"]
+                out.at[idx, "EvidenceStatus"] = "Matched to issue tracker"
+    return out
+
+
+def write_review_evidence(
+    evidence_dir: Path,
+    usage: pd.DataFrame,
+    purchase_orders: pd.DataFrame,
+    issue_tracker: pd.DataFrame,
+    masters: pd.DataFrame | None,
+) -> list[Path]:
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    files = [
+        (build_parts_usage_evidence(usage, masters), evidence_dir / "PartsUsage_SPLMaster_Evidence.csv"),
+        (build_purchase_order_evidence(purchase_orders, masters, issue_tracker), evidence_dir / "PurchaseOrders_SPLMaster_Evidence.csv"),
+        (issue_tracker_evidence_rows(issue_tracker, masters), evidence_dir / "IssueTracker_Line_Evidence.csv"),
+    ]
+    return [_write_csv(df, path) for df, path in files]
 
 
 def build_template_warehouses(warehouses: pd.DataFrame, columns: list[str]) -> pd.DataFrame:

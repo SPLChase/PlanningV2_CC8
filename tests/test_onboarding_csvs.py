@@ -145,6 +145,34 @@ class OnboardingCsvTests(unittest.TestCase):
         self.assertEqual(out.loc[1, "receivedDateTime"], "2026-05-07")
         self.assertEqual(out.loc[0, "demandStatus"], "")
 
+    def test_template_purchase_orders_enriches_demand_status_with_strict_ticket_evidence(self) -> None:
+        source = pd.DataFrame(
+            {
+                "PurchaseOrderNumber": ["50001"],
+                "DocStatus": ["O"],
+                "Canceled": ["N"],
+                "PartNumber": ["ALT2"],
+                "Quantity": [1],
+            }
+        )
+        issue_tracker = pd.DataFrame(
+            {
+                "PurchaseOrderKey": ["50001"],
+                "Part Nr": ["MAIN1"],
+                "PartKey": ["MAIN1"],
+                "DispatchPartNo": [""],
+                "DispatchPartKey": [""],
+                "Call Number": ["777"],
+                "MSConvoID": ["thread-1"],
+                "ReplenishStatus": ["Approved"],
+            }
+        )
+        masters = pd.DataFrame({"SPL Master": ["SPL1"], "Items linked": ["MAIN1;ALT2"]})
+
+        out = build_template_purchase_orders(source, ["purchaseOrderNumber", "partNumber", "demandStatus"], masters, issue_tracker)
+
+        self.assertEqual(out.loc[0, "demandStatus"], "Approved")
+
     def test_validation_flags_missing_confirmed_csv_columns(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

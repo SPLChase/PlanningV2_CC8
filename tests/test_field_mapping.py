@@ -40,15 +40,20 @@ class FieldMappingTests(unittest.TestCase):
                     "Altron file",
                     "CC8 relevant?",
                     "CC8 can supply?",
+                    "Priority",
+                    "CC8Comment",
+                    "Codex",
                 ]
             )
-            worksheet.append(["\ufeffpart_id", "** KEY **", "", "", "", "YES", "String", "Part", "SPL Masters", "AMS Masters (SPL generated - from distribution portal)", "Yes", "Yes"])
+            worksheet.append(["\ufeffpart_id", "** KEY **", "", "", "", "YES", "String", "Part", "SPL Masters", "AMS Masters (SPL generated - from distribution portal)", "Yes", "Yes", 1, "Use masters", ""])
             workbook.save(ref_dir / "SPL Planning Data Fields.xlsx")
 
             fields = parse_target_fields(ref_dir)
 
         self.assertEqual(len(fields), 1)
         self.assertEqual(fields[0].field_name, "part_id")
+        self.assertEqual(fields[0].priority, "1")
+        self.assertEqual(fields[0].cc8_comment, "Use masters")
 
     def test_classify_known_minstock_master_field(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -69,9 +74,12 @@ class FieldMappingTests(unittest.TestCase):
                     "Altron file",
                     "CC8 relevant?",
                     "CC8 can supply?",
+                    "Priority",
+                    "CC8Comment",
+                    "Codex",
                 ]
             )
-            worksheet.append(["SPL MASTER", "", "", "", "", "YES", "String", "SPL master", "SPL Masters", "AMS Masters (SPL generated - from distribution portal)", "Yes", "Yes"])
+            worksheet.append(["SPL MASTER", "", "", "", "", "YES", "String", "SPL master", "SPL Masters", "AMS Masters (SPL generated - from distribution portal)", "Yes", "Yes", 1, "", ""])
             workbook.save(ref_dir / "SPL Planning Data Fields.xlsx")
             field = parse_target_fields(ref_dir)[0]
 
@@ -98,9 +106,12 @@ class FieldMappingTests(unittest.TestCase):
                     "Altron file",
                     "CC8 relevant?",
                     "CC8 can supply?",
+                    "Priority",
+                    "CC8Comment",
+                    "Codex",
                 ]
             )
-            worksheet.append(["order_id", "", "", "", "", "YES", "String", "Work order", "Work order information", "order_line", "Yes", "Via Chase Power Automate"])
+            worksheet.append(["order_id", "", "", "", "", "YES", "String", "Work order", "Work order information", "order_line", "Yes", "Via Chase Power Automate", 1, "Maybe from tickets", ""])
             workbook.save(ref_dir / "SPL Planning Data Fields.xlsx")
             field = parse_target_fields(ref_dir)[0]
 

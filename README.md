@@ -20,6 +20,7 @@ See [docs/minstock3-notes.md](docs/minstock3-notes.md) for the detailed notes ca
 ```text
 planning_v2/
   config.py              Environment-driven pipeline settings
+  issue_tracker.py       Strict HelpDesk ticket evidence helpers
   sap_service_layer.py   SAP Service Layer session and query helpers
   schemas.py             Shared column definitions for onboarding outputs
 docs/
@@ -41,6 +42,7 @@ Copy-Item planning.env.example planning.env
 ```
 
 Fill `planning.env` with SAP Service Layer credentials and local data paths.
+Set `ISSUE_TRACKER_CSV` only if the CoCre8 HelpDesk export is not in your Downloads folder.
 
 ## Next Build Step
 
@@ -61,19 +63,22 @@ Output:
 Generate usable onboarding CSVs from confirmed local sources, plus header-only templates for unresolved objects:
 
 ```powershell
-py -m planning_v2.generate_onboarding_csvs --out data/output/template_onboarding_csvs
+py -m planning_v2.generate_onboarding_csvs --out data/output/onboarding_csvs
 ```
 
-Generated CSVs under `data/output/` are ignored by git. The workbook has review tabs for both the original reference field list and the Planning V2 sample-template fields:
+Generated CSVs and evidence files under `data/output/` are ignored by git. The workbook has review tabs for both the original reference field list and the Planning V2 sample-template fields:
 
 - `Target Fields`
 - `Template Fields`
 - `Source Evidence`
 - `Unknowns`
 - `Output Objects`
+- `Missing Important Fields`
 - `SAP Investigation Log`
 
-Current template-shaped CSVs with confirmed partial data are `Parts`, `Warehouses`, `WarehouseStockOnHand`, and `Customers`. The remaining template CSVs are header-only until SAP Service Layer sources are proven.
+Current template-shaped CSVs with confirmed partial data are `Parts`, `Warehouses`, `WarehouseStockOnHand`, `PartsUsage`, and `PurchaseOrders`. Review evidence files under `data/output/review_evidence/` preserve actual SAP/report part numbers, mapped `SPL Master`, and strict ticket/PO matches without committing customer data.
+
+HelpDesk flow observations and easy process improvements are documented in `docs/helpdesk-flow-recommendations.md`.
 
 Run tests:
 

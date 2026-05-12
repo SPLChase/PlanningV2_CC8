@@ -15,7 +15,7 @@ from openpyxl.worksheet.table import Table, TableStyleInfo
 
 from planning_v2.config import PlanningConfig, get_config
 from planning_v2.schemas import CONFIRMED_OUTPUT_OBJECTS, FIELD_MAP_WORKBOOK, PENDING_OUTPUT_OBJECTS
-from planning_v2.template_specs import load_template_fields
+from planning_v2.template_specs import load_template_fields, template_columns
 from planning_v2.onboarding_csvs import POPULATED_TEMPLATE_FIELDS
 
 
@@ -110,6 +110,9 @@ class TargetField:
     explanation: str
     cc8_relevant: str
     cc8_can_supply: str
+    priority: str
+    cc8_comment: str
+    codex: str
 
 
 @dataclass(frozen=True)
@@ -122,6 +125,7 @@ class FieldDecision:
     transform: str
     confidence: str
     notes: str
+    codex_note: str = ""
 
 
 def clean_text(value: object) -> str:
@@ -147,7 +151,7 @@ def parse_target_fields(reference_dir: Path) -> list[TargetField]:
         raise FileNotFoundError(f"Missing target field workbook: {reference_dir / TARGET_FIELDS_FILE}")
 
     workbook = load_workbook(path, read_only=True, data_only=True)
-    worksheet = workbook.active
+    worksheet = workbook["SPL Planning Data Fields"] if "SPL Planning Data Fields" in workbook.sheetnames else workbook.active
     headers = [clean_text(cell) for cell in next(worksheet.iter_rows(min_row=1, max_row=1, values_only=True))]
     index = {header: i for i, header in enumerate(headers) if header}
     required = [
@@ -182,6 +186,9 @@ def parse_target_fields(reference_dir: Path) -> list[TargetField]:
                 explanation=clean_text(row[index["Field Explanation"]]),
                 cc8_relevant=clean_text(row[index["CC8 relevant?"]]),
                 cc8_can_supply=clean_text(row[index["CC8 can supply?"]]),
+                priority=clean_text(row[index["Priority"]]) if "Priority" in index else "",
+                cc8_comment=clean_text(row[index["CC8Comment"]]) if "CC8Comment" in index else "",
+                codex=clean_text(row[index["Codex"]]) if "Codex" in index else "",
             )
         )
     workbook.close()
@@ -190,6 +197,11 @@ def parse_target_fields(reference_dir: Path) -> list[TargetField]:
 
 def is_v1_target(field: TargetField) -> bool:
     relevance = field.cc8_relevant.lower()
+    priority = priority_rank(field)
+    if priority == 0:
+        return False
+    if priority in {1, 2, 3}:
+        return not relevance.startswith("no")
     if relevance.startswith("no"):
         return False
     if relevance.startswith("yes") or relevance.startswith("maybe"):
@@ -203,11 +215,25 @@ def is_v1_target(field: TargetField) -> bool:
     return False
 
 
+def priority_rank(field: TargetField) -> int | None:
+    text = clean_text(field.priority)
+    if not text:
+        return None
+    try:
+        return int(float(text))
+    except ValueError:
+        return None
+
+
 def classify_field(field: TargetField) -> FieldDecision:
     object_key = normalize_name(field.object_name)
     field_key = normalize_name(field.field_name)
     supplied = field.cc8_can_supply.lower()
     context = field.context_area
+    priority = priority_rank(field)
+
+    if priority == 0 or field.cc8_relevant.lower().startswith("no"):
+        return FieldDecision(field, STATUS_OUT_OF_SCOPE, "", "", "", "", "", "Not marked as needed for CoCre8 onboarding.", "Priority 0 / CC8 not relevant; excluded from MVP blockers.")
 
     confirmed_sources = {
         "ams_masters_spl_generated_from_distribution_portal": ("Local file", "masters.csv", "SPL Master / Items linked"),
@@ -228,13 +254,14 @@ def classify_field(field: TargetField) -> FieldDecision:
             transform=_default_transform(field),
             confidence="High" if object_key != "bpart_cost" else "Medium",
             notes="Confirmed from MinStock3/Exco local sources; review business meaning where noted.",
+            codex_note="Confirmed source. Use masters.csv as the SPL Master bridge; keep actual part numbers for traceability.",
         )
 
     if object_key == "bpart":
         if field_key in {"abc_id", "is_exclude_from_replishment", "cst_branch_stockable", "cst_boot_stock"}:
             return _review_decision(field, "Local/SPI-derived item attributes need business confirmation.")
         if field_key in {"part_id", "pclass2_id", "pclass3_id"}:
-            return FieldDecision(field, STATUS_CONFIRMED, "SAP/SPI/local", "OITM / SPI_DATA.csv", field.field_name, _default_transform(field), "Medium", "Part identity and class-like attributes are present, but exact V2 semantic mapping needs review.")
+            return FieldDecision(field, STATUS_CONFIRMED, "SAP/SPI/local", "OITM / SPI_DATA.csv", field.field_name, _default_transform(field), "Medium", "Part identity and class-like attributes are present, but exact V2 semantic mapping needs review.", "Available, but use SPL Master as planning grain and actual SAP part as evidence.")
         return _sap_investigation_decision(field, "SAP item master field candidate; exact source column not yet proven.")
 
     if object_key in {"goods", "ib_warehouse", "model"}:
@@ -255,26 +282,26 @@ def classify_field(field: TargetField) -> FieldDecision:
         return _sap_investigation_decision(field, "Reference marks this as possible but source is not proven.")
 
     if object_key in {"multiple", "critical_parts", "exclusions_import_template_spl_generated_by_distribution_portal"}:
-        return FieldDecision(field, STATUS_INVESTIGATE_EXTERNAL, "SPL distribution portal/manual rule", field.object_name, field.field_name, "Import as maintained rule table once provided.", "Low", "Not available from MinStock3/Exco evidence.")
+        return FieldDecision(field, STATUS_INVESTIGATE_EXTERNAL, "SPL distribution portal/manual rule", field.object_name, field.field_name, "Import as maintained rule table once provided.", "Low", "Not available from MinStock3/Exco evidence.", "Needs non-SAP owner/source confirmation before population.")
 
     if object_key in {"purchase_orders", "repair_orders", "service_call_env"}:
         return _sap_investigation_decision(field, "Important V2 vision object; not confirmed in current CC8 local sources.")
 
     if supplied.startswith("yes"):
-        return FieldDecision(field, STATUS_REVIEW, "Reference workbook", field.object_name, field.field_name, _default_transform(field), "Medium", "Reference says CC8 can supply, but no local proof was identified.")
+        return FieldDecision(field, STATUS_REVIEW, "Reference workbook", field.object_name, field.field_name, _default_transform(field), "Medium", "Reference says CC8 can supply, but no local proof was identified.", "CC8 note says available, but implementation needs proof/source column before loading.")
     if "power automate" in supplied:
         return _sap_investigation_decision(field, "External hint exists, but SAP-first investigation is required.")
     if is_v1_target(field):
         return _sap_investigation_decision(field, "V1 target field has no confirmed source.")
-    return FieldDecision(field, STATUS_OUT_OF_SCOPE, "", "", "", "", "", "Not marked CC8 relevant for v1.")
+    return FieldDecision(field, STATUS_OUT_OF_SCOPE, "", "", "", "", "", "Not marked CC8 relevant for v1.", "Excluded from current CoCre8 onboarding scope.")
 
 
 def _review_decision(field: TargetField, notes: str) -> FieldDecision:
-    return FieldDecision(field, STATUS_REVIEW, "Local/SPI/SPL rule", field.object_name, field.field_name, _default_transform(field), "Medium", notes)
+    return FieldDecision(field, STATUS_REVIEW, "Local/SPI/SPL rule", field.object_name, field.field_name, _default_transform(field), "Medium", notes, "Review business meaning before loading; do not infer from field name alone.")
 
 
 def _sap_investigation_decision(field: TargetField, notes: str) -> FieldDecision:
-    return FieldDecision(field, STATUS_INVESTIGATE_SAP, "SAP Service Layer", field.object_name, field.field_name, "Do not populate until SAP source is proven.", "Low", notes)
+    return FieldDecision(field, STATUS_INVESTIGATE_SAP, "SAP Service Layer", field.object_name, field.field_name, "Do not populate until SAP source is proven.", "Low", notes, "Investigate SAP first; leave blank until exact endpoint/table and semantics are proven.")
 
 
 def _default_transform(field: TargetField) -> str:
@@ -306,6 +333,8 @@ def source_evidence_rows(cfg: PlanningConfig) -> list[dict[str, str]]:
         ("Manual stock audit report", cfg.exco_source_dir / "Stock Audit Report.txt", "Allowed manual SAP report source for usage once mapped to the template."),
         ("Reference target fields", cfg.reference_dir / TARGET_FIELDS_FILE, "Planning V2 target field metadata and CC8 relevance hints."),
         ("Planning V2 sample templates", cfg.samples_dir / "Templates raw.xlsx", "Canonical onboarding template fields used for template-shaped CSV outputs."),
+        ("CoCre8 HelpDesk issue tracker", cfg.issue_tracker_csv, "External SharePoint-list export used only for strict ticket/PO evidence; not committed to git."),
+        ("HelpDesk Power Automate flow", cfg.reference_dir / "HelpdeskFlow.txt", "Reference flow for ticket lifecycle and improvement recommendations."),
         ("Live SAP item group check", "MinStock3 SAP Service Layer credentials", "Checked Items and ItemGroups while VPN was connected. ItemGroups are broad customer/manufacturer groups such as FUJITSU, ACER, and CHOICE; sampled item master fields ItemType, ItemClass, and MaterialType are generic SAP classifications."),
     ]
     rows = []
@@ -330,18 +359,21 @@ def output_object_rows(decisions: Iterable[FieldDecision]) -> list[dict[str, str
 
     rows: list[dict[str, str]] = []
     for object_name, fields in CONFIRMED_OUTPUT_OBJECTS.items():
+        object_decisions = by_object.get(normalize_name(object_name), [])
         blockers = sorted(
             {
                 decision.target.field_name
-                for decision in by_object.get(normalize_name(object_name), [])
+                for decision in object_decisions
                 if decision.source_status in {STATUS_INVESTIGATE_SAP, STATUS_INVESTIGATE_EXTERNAL}
+                and priority_rank(decision.target) == 1
             }
         )
+        p1_count = sum(1 for decision in object_decisions if priority_rank(decision.target) == 1)
         rows.append(
             {
                 "Object": object_name,
                 "CSV": f"{object_name}.csv",
-                "Readiness": "Populated" if not blockers else "Partial",
+                "Readiness": "MVP ready" if p1_count and not blockers else "MVP partial" if p1_count else "Populated",
                 "Fields": ", ".join(fields),
                 "Blockers": "; ".join(blockers),
             }
@@ -405,9 +437,12 @@ def unknown_rows(decisions: Iterable[FieldDecision]) -> list[dict[str, str]]:
                 "Field": decision.target.field_name,
                 "Object": decision.target.object_name,
                 "Context": decision.target.context_area,
+                "Priority": decision.target.priority,
                 "Status": decision.source_status,
                 "Question": _investigation_question(decision),
                 "Next Action": _next_action(decision),
+                "CC8 Comment": decision.target.cc8_comment,
+                "Codex": decision.codex_note,
                 "Notes": decision.notes,
             }
         )
@@ -433,6 +468,7 @@ def _next_action(decision: FieldDecision) -> str:
 
 def build_field_map_workbook(cfg: PlanningConfig, output_path: Path | None = None) -> Path:
     fields = parse_target_fields(cfg.reference_dir)
+    update_reference_codex_notes(cfg.reference_dir, fields)
     decisions = build_decisions(fields)
     output_path = output_path or Path("docs") / "field-map" / FIELD_MAP_WORKBOOK
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -444,6 +480,7 @@ def build_field_map_workbook(cfg: PlanningConfig, output_path: Path | None = Non
     _write_sheet(workbook, "Source Evidence", source_evidence_rows(cfg))
     _write_sheet(workbook, "Unknowns", unknown_rows(decisions) + template_unknown_rows(cfg))
     _write_sheet(workbook, "Output Objects", output_object_rows(decisions) + template_output_rows(cfg))
+    _write_sheet(workbook, "Missing Important Fields", missing_important_field_rows(cfg, decisions))
     _write_sheet(workbook, "SAP Investigation Log", sap_investigation_rows(decisions))
     workbook.save(output_path)
     return output_path
@@ -563,6 +600,8 @@ def _target_field_rows(decisions: Iterable[FieldDecision]) -> list[dict[str, str
                 "Used by SPL": field.used_by_spl,
                 "CC8 Relevant": field.cc8_relevant,
                 "CC8 Supply Hint": field.cc8_can_supply,
+                "Priority": field.priority,
+                "CC8 Comment": field.cc8_comment,
                 "Data Type": field.data_type,
                 "Source Status": decision.source_status,
                 "Source System": decision.source_system,
@@ -571,7 +610,107 @@ def _target_field_rows(decisions: Iterable[FieldDecision]) -> list[dict[str, str
                 "Transform": decision.transform,
                 "Confidence": decision.confidence,
                 "Explanation": field.explanation,
+                "Codex": decision.codex_note,
                 "Notes": decision.notes,
+            }
+        )
+    return rows
+
+
+def update_reference_codex_notes(reference_dir: Path, fields: list[TargetField]) -> None:
+    path = reference_dir / TARGET_FIELDS_FILE
+    if not path.exists():
+        return
+    workbook = load_workbook(path)
+    worksheet = workbook["SPL Planning Data Fields"] if "SPL Planning Data Fields" in workbook.sheetnames else workbook.active
+    headers = [clean_text(cell.value) for cell in worksheet[1]]
+    if "Codex" not in headers:
+        codex_col = len(headers) + 1
+        worksheet.cell(row=1, column=codex_col, value="Codex")
+    else:
+        codex_col = headers.index("Codex") + 1
+    by_row = {field.row_number: classify_field(field) for field in fields}
+    for row_number, decision in by_row.items():
+        worksheet.cell(row=row_number, column=codex_col, value=decision.codex_note or decision.notes)
+    workbook.save(path)
+    workbook.close()
+
+
+def missing_important_field_rows(cfg: PlanningConfig, decisions: Iterable[FieldDecision]) -> list[dict[str, str]]:
+    templates = template_columns(cfg.samples_dir)
+    template_fields = {field.lower() for fields in templates.values() for field in fields}
+    dictionary_path = cfg.reference_dir / "Planning Data Dictionary (SPL Ref).xlsx"
+    dictionary_sheets: list[str] = []
+    if dictionary_path.exists():
+        workbook = load_workbook(dictionary_path, read_only=True, data_only=True)
+        dictionary_sheets = workbook.sheetnames
+        workbook.close()
+
+    rows: list[dict[str, str]] = []
+    for decision in decisions:
+        field = decision.target
+        if priority_rank(field) != 1:
+            continue
+        normalized_field = normalize_name(field.field_name)
+        has_template_field = field.field_name.lower() in template_fields or normalized_field in {normalize_name(name) for name in template_fields}
+        if has_template_field:
+            continue
+        rows.append(
+            {
+                "Potential Gap": f"{field.object_name}.{field.field_name}",
+                "Why It Matters": "Priority 1 in edited field list but no direct field-name match was found in the sample templates.",
+                "Reference Evidence": f"Context: {field.context_area}; CC8 comment: {field.cc8_comment}",
+                "Dictionary Evidence": "Object sheet exists" if normalize_name(field.object_name) in {normalize_name(name) for name in dictionary_sheets} else "No obvious dictionary sheet match",
+                "Recommended Action": "Confirm whether this maps to an existing differently named template field or needs a new/onboarding-side evidence field.",
+            }
+        )
+
+    explicit_gaps = [
+        (
+            "Part alternatives / SPL Master relationship",
+            "Planning operates mainly at SPL Master level and replenishment may use an alternative part.",
+            "masters.csv and SPI_DATA.csv prove the relationship, but most transactional templates only have one part field.",
+            "Ask Planning V2 whether order/usage/PO line part fields should contain actual part numbers, SPL Master, or both.",
+        ),
+        (
+            "Requested vs dispatched vs replenished part",
+            "Ticket lifecycle can involve one requested part, another dispatched alternative, and another replenishment part.",
+            "Issue tracker has Part Nr and DispatchPartNo; SAP PO has POR1.ItemCode.",
+            "Add explicit evidence fields or confirm importer handles alternatives through Parts.SPLMaster.",
+        ),
+        (
+            "Delivery note number",
+            "Delivery note is the strongest bridge between dispatch and actual usage/stock movement.",
+            "Stock Audit Report contains DN document; HelpDesk emails often mention attached delivery notes.",
+            "Capture delivery-note number in HelpDesk tickets and confirm target template field.",
+        ),
+        (
+            "Fujitsu order confirmation number",
+            "Needed to track replenishment after CoCre8 approves PO and SPL orders on Fujitsu portal.",
+            "HelpDesk flow already parses OrderConfNumber starting with 800 but templates do not expose it clearly.",
+            "Confirm whether it belongs in PurchaseOrders or a separate replenishment/order-lifecycle template.",
+        ),
+        (
+            "Faulty return / collection status",
+            "Returned faulty parts are operationally important but unreliable in current process.",
+            "Emails contain collection/return instructions; issue tracker has status but not a structured return lifecycle.",
+            "Confirm whether this is needed for MVP or only process reporting.",
+        ),
+        (
+            "Stable ticket/conversation identifiers",
+            "Strict joins need MSConvoID, Call Number, PO, and line-level part identifiers.",
+            "Issue tracker has MSConvoID and Call Number; templates do not obviously carry both.",
+            "Confirm whether ServiceOrder/PartsUsage should include request/ticket identifiers.",
+        ),
+    ]
+    for gap, why, evidence, action in explicit_gaps:
+        rows.append(
+            {
+                "Potential Gap": gap,
+                "Why It Matters": why,
+                "Reference Evidence": evidence,
+                "Dictionary Evidence": "Checked against template headers and dictionary sheet names.",
+                "Recommended Action": action,
             }
         )
     return rows

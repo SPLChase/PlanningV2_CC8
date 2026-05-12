@@ -73,6 +73,7 @@ class PlanningConfig:
     exco_source_dir: Path
     exco_output_dir: Path
     minstock3_dir: Path
+    issue_tracker_csv: Path
     sap_url: str
     sap_company: str
     sap_user: str
@@ -102,6 +103,9 @@ def get_config() -> PlanningConfig:
         exco_source_dir=Path(os.getenv("EXCO_SOURCE_DIR", "C:/dev/cc8/Exco/source_data")),
         exco_output_dir=Path(os.getenv("EXCO_OUTPUT_DIR", "C:/dev/cc8/Exco/output/csv")),
         minstock3_dir=Path(os.getenv("MINSTOCK3_DIR", "C:/dev/cc8/MinStock3")),
+        issue_tracker_csv=Path(
+            os.getenv("ISSUE_TRACKER_CSV", str(Path.home() / "Downloads" / "CoCre8 Issue Tracker V3.2.csv"))
+        ),
         sap_url=(os.getenv("SAP_URL") or "").rstrip("/"),
         sap_company=os.getenv("SAP_COMPANY") or "",
         sap_user=os.getenv("SAP_USER") or "",
