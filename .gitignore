@@ -16,8 +16,10 @@ data/output/
 *.xlsx
 *.xlsm
 ~$*.xlsx
+**/~$*.xlsx
 !Reference/
 !Reference/*.xlsx
+Reference/~$*.xlsx
 Reference/HelpdeskFlow.txt
 Reference/helpdesk_emails/
 !Samples/
@@ -26,6 +28,10 @@ Samples/*
 !docs/field-map/
 !docs/field-map/*.xlsx
 docs/field-map/~$*.xlsx
+!docs/manual-fill/
+!docs/manual-fill/*.xlsx
+docs/manual-fill/Warehouses_Missing_Fields_To_Fill.xlsx
+docs/manual-fill/~$*.xlsx
 
 .DS_Store
 Thumbs.db

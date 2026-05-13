@@ -95,6 +95,8 @@ TEMPLATE_FIELDS_NOT_CC8_RELEVANT = {
     ("Warehouses", "nodeId"): "warehouse.node_id is marked CC8 relevant = No.",
     ("Warehouses", "isRepairWarehouse"): "warehouse.is_repair_whse is marked CC8 relevant = No.",
     ("Warehouses", "isBootStockable"): "warehouse.cst_boot_stockable is marked CC8 relevant = No.",
+    ("WarehouseStockOnHand", "inventoryType"): "Not needed for CoCre8 MVP; no confirmed good/bad inventory type source in SAP stock metrics.",
+    ("WarehouseStockOnHand", "quantityOutbound"): "Not needed for CoCre8 MVP; CoCre8 issues stock directly and no separate outbound stock source was found.",
 }
 
 

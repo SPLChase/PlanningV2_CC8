@@ -44,13 +44,16 @@ class OnboardingCsvTests(unittest.TestCase):
                 "Ordered": ["3"],
             }
         )
+        masters = pd.DataFrame({"SPL Master": ["SPL1"], "Items linked": ["A1"]})
         stock = build_template_stock_on_hand(
             inventory,
             ["partCode", "warehouseCode", "inventoryType", "quantityAllocated", "quantityOnHand", "quantityInbound", "quantityOutbound", "uniqueId"],
+            masters,
         )
         self.assertEqual(stock.loc[0, "partCode"], "A1")
         self.assertEqual(stock.loc[0, "quantityOnHand"], 2)
         self.assertEqual(stock.loc[0, "inventoryType"], "")
+        self.assertNotEqual(stock.loc[0, "uniqueId"], "")
 
     def test_template_parts_leaves_unproven_primary_fields_blank(self) -> None:
         parts = pd.DataFrame({"ItemNo": ["A1"], "SPLMaster": ["SPL1"], "ItemDescription": ["Part A"], "DisplayItemNo": ["A1"]})

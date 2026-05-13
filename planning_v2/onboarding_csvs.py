@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import zlib
 from pathlib import Path
 
 import pandas as pd
@@ -39,6 +40,7 @@ POPULATED_TEMPLATE_FIELDS = {
         "quantityAllocated": "SAP Service Layer SQLQueries:OITW.IsCommited",
         "quantityOnHand": "SAP Service Layer SQLQueries:OITW.OnHand",
         "quantityInbound": "SAP Service Layer SQLQueries:OITW.OnOrder",
+        "uniqueId": "Derived stable integer from MinStock-style RowKey part|SPLMaster|warehouse",
     },
     "Customers": {},
     "PartsUsage": {
@@ -83,6 +85,8 @@ OUT_OF_SCOPE_TEMPLATE_FIELDS = {
     ("Warehouses", "nodeId"),
     ("Warehouses", "isRepairWarehouse"),
     ("Warehouses", "isBootStockable"),
+    ("WarehouseStockOnHand", "inventoryType"),
+    ("WarehouseStockOnHand", "quantityOutbound"),
 }
 
 
@@ -182,7 +186,7 @@ def build_template_outputs(
         elif object_name == "Warehouses":
             outputs[object_name] = build_template_warehouses(warehouses, columns)
         elif object_name == "WarehouseStockOnHand":
-            outputs[object_name] = build_template_stock_on_hand(inventory, columns)
+            outputs[object_name] = build_template_stock_on_hand(inventory, columns, masters)
         elif object_name == "Customers":
             outputs[object_name] = build_template_customers(customers, columns)
         elif object_name == "PartsUsage":
@@ -273,6 +277,13 @@ def _spi_main_alt_lookup(spi: pd.DataFrame) -> dict[str, str]:
 
 def _master_lookup(masters: pd.DataFrame | None) -> dict[str, str]:
     return master_lookup(masters)
+
+
+def _stable_rowkey_int(value: object) -> int:
+    text = str(value or "").strip()
+    if not text:
+        return 0
+    return zlib.crc32(text.encode("utf-8")) & 0x7FFFFFFF
 
 
 def build_template_parts(
@@ -529,7 +540,11 @@ def build_template_warehouses(warehouses: pd.DataFrame, columns: list[str]) -> p
     return out.drop_duplicates(subset=["warehouseId"], keep="first") if "warehouseId" in out.columns else out
 
 
-def build_template_stock_on_hand(inventory: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+def build_template_stock_on_hand(
+    inventory: pd.DataFrame,
+    columns: list[str],
+    masters: pd.DataFrame | None = None,
+) -> pd.DataFrame:
     if inventory.empty:
         return pd.DataFrame(columns=columns)
     out = _blank_template(columns, len(inventory))
@@ -544,7 +559,12 @@ def build_template_stock_on_hand(inventory: pd.DataFrame, columns: list[str]) ->
     if "quantityInbound" in out.columns:
         out["quantityInbound"] = _to_number(_first_col(inventory, ["OnOrder", "Ordered"]))
     if "uniqueId" in out.columns:
-        out["uniqueId"] = ""
+        by_part = _master_lookup(masters)
+        part_keys = _col(inventory, "ItemNo").map(_part_key)
+        master_keys = part_keys.map(by_part).fillna("")
+        warehouse_keys = _col(inventory, "WarehouseCode").astype(str).str.strip()
+        row_keys = part_keys.astype(str) + "|" + master_keys.astype(str) + "|" + warehouse_keys.astype(str)
+        out["uniqueId"] = row_keys.map(_stable_rowkey_int)
     subset = [col for col in ["partCode", "warehouseCode"] if col in out.columns]
     return out.drop_duplicates(subset=subset, keep="first") if subset else out
 
