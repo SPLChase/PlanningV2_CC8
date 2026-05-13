@@ -9,6 +9,7 @@ This repo is for onboarding CoCre8 data into the external Planning V2 Excel/CSV 
 - The planning tool operates mainly at **SPL Master** level. Actual SAP/email part numbers must still be retained for traceability because requested, dispatched, returned, and replenished parts may be alternatives.
 - `Reference/masters.csv` is the canonical bridge from actual part numbers to `SPL Master`.
 - `Reference/SPL Planning Data Fields edited.xlsx` is the current field-priority source. It includes user columns such as `Priority`, `CC8Comment`, and `Codex`.
+- The canonical import headers come from the individual workbooks in `Samples/` such as `Warehouses.xlsx`, `Warehouse Stock on Hand.xlsx`, and `Purchase Orders.xlsx`. `Templates raw.xlsx` is only a fallback/metadata source when an individual workbook is absent.
 - Priority meaning:
   - `1`: MVP.
   - `2`: immediately after MVP / some work needed.

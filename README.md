@@ -66,7 +66,7 @@ Generate usable onboarding CSVs from confirmed local sources, plus header-only t
 py -m planning_v2.generate_onboarding_csvs --out data/output/onboarding_csvs
 ```
 
-Generated CSVs and evidence files under `data/output/` are ignored by git. The workbook has review tabs for both the original reference field list and the Planning V2 sample-template fields:
+Generated CSVs and evidence files under `data/output/` are ignored by git. Template headers are read from the individual workbooks in `Samples/` when present, with `Templates raw.xlsx` used only as a fallback/metadata source. The workbook has review tabs for both the original reference field list and the Planning V2 sample-template fields:
 
 - `Target Fields`
 - `Template Fields`

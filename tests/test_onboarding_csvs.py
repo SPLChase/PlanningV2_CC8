@@ -49,10 +49,10 @@ class OnboardingCsvTests(unittest.TestCase):
         masters = pd.DataFrame({"SPL Master": ["SPL1"], "Items linked": ["A1"]})
         stock = build_template_stock_on_hand(
             inventory,
-            ["partCode", "warehouseCode", "inventoryType", "quantityAllocated", "quantityOnHand", "quantityInbound", "quantityOutbound", "uniqueId"],
+            ["partNumber", "warehouseCode", "inventoryType", "quantityAllocated", "quantityOnHand", "quantityInbound", "quantityOutbound", "uniqueId"],
             masters,
         )
-        self.assertEqual(stock.loc[0, "partCode"], "A1")
+        self.assertEqual(stock.loc[0, "partNumber"], "A1")
         self.assertEqual(stock.loc[0, "quantityOnHand"], 2)
         self.assertEqual(stock.loc[0, "inventoryType"], "")
         self.assertNotEqual(stock.loc[0, "uniqueId"], "")
@@ -169,6 +169,23 @@ class OnboardingCsvTests(unittest.TestCase):
         self.assertEqual(list(out["partCode"]), ["A1", "A1"])
         self.assertEqual(list(out["quantityUsed"]), [2, 1])
         self.assertEqual(out.loc[0, "partsUsedDateTime"], "2026-02-01")
+
+    def test_template_parts_usage_can_include_spl_master_column(self) -> None:
+        usage = pd.DataFrame(
+            {
+                "Item No.": ["A1"],
+                "Description": ["Part A"],
+                "Posting Date": ["01/02/26"],
+                "Document": ["DN 1"],
+                "Whse": ["WH1"],
+                "Quantity": ["-2"],
+            }
+        )
+        masters = pd.DataFrame({"SPL Master": ["SPL1"], "Items linked": ["A1;B2"]})
+
+        out = build_template_parts_usage(usage, ["orderNumber", "partCode", "Master"], masters)
+
+        self.assertEqual(out.loc[0, "Master"], "SPL1")
 
     def test_template_purchase_orders_maps_sap_po_lines_and_receipts(self) -> None:
         source = pd.DataFrame(

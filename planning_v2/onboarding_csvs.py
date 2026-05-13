@@ -43,7 +43,7 @@ POPULATED_TEMPLATE_FIELDS = {
         "warehouseStatusId": "Manual fill workbook:isObsolete inverted to is_active flag (Y active, N obsolete)",
     },
     "WarehouseStockOnHand": {
-        "partCode": "SAP Service Layer SQLQueries:OITW.ItemCode",
+        "partNumber": "SAP Service Layer SQLQueries:OITW.ItemCode",
         "warehouseCode": "SAP Service Layer SQLQueries:OITW.WhsCode",
         "quantityAllocated": "SAP Service Layer SQLQueries:OITW.IsCommited",
         "quantityOnHand": "SAP Service Layer SQLQueries:OITW.OnHand",
@@ -57,6 +57,7 @@ POPULATED_TEMPLATE_FIELDS = {
         "Warehouse": "Stock Audit Report 3Y:Whse",
         "quantityUsed": "Stock Audit Report 3Y:absolute Quantity for negative DN rows",
         "partsUsedDateTime": "Stock Audit Report 3Y:Posting Date",
+        "Master": "Reference masters.csv:SPL Master by used part",
     },
     "PurchaseOrders": {
         "purchaseOrderNumber": "SAP Service Layer SQLQueries:OPOR.DocNum",
@@ -410,6 +411,8 @@ def build_template_parts_usage(
         out["orderNumber"] = dn["Document"].astype(str).str.strip()
     if "partCode" in out.columns:
         out["partCode"] = dn["Item No."].map(_part_key)
+    if "Master" in out.columns:
+        out["Master"] = dn["Item No."].map(_part_key).map(_master_lookup(masters)).fillna("")
     if "Warehouse" in out.columns:
         out["Warehouse"] = dn["Whse"].astype(str).str.strip()
     if "quantityUsed" in out.columns:
@@ -664,6 +667,8 @@ def build_template_stock_on_hand(
     out = _blank_template(columns, len(inventory))
     if "partCode" in out.columns:
         out["partCode"] = _col(inventory, "ItemNo")
+    if "partNumber" in out.columns:
+        out["partNumber"] = _col(inventory, "ItemNo")
     if "warehouseCode" in out.columns:
         out["warehouseCode"] = _col(inventory, "WarehouseCode")
     if "quantityAllocated" in out.columns:
@@ -679,7 +684,7 @@ def build_template_stock_on_hand(
         warehouse_keys = _col(inventory, "WarehouseCode").astype(str).str.strip()
         row_keys = part_keys.astype(str) + "|" + master_keys.astype(str) + "|" + warehouse_keys.astype(str)
         out["uniqueId"] = row_keys.map(_stable_rowkey_int)
-    subset = [col for col in ["partCode", "warehouseCode"] if col in out.columns]
+    subset = [col for col in ["partCode", "partNumber", "warehouseCode"] if col in out.columns]
     return out.drop_duplicates(subset=subset, keep="first") if subset else out
 
 
@@ -694,6 +699,8 @@ def build_template_customers(customers: pd.DataFrame, columns: list[str]) -> pd.
         out["customerId"] = _col(source, "CustomerCode")
     if "Description" in out.columns:
         out["Description"] = _col(source, "CustomerName")
+    if "customerName" in out.columns:
+        out["customerName"] = _col(source, "CustomerName")
     return out.drop_duplicates(subset=["customerId"], keep="first") if "customerId" in out.columns else out
 
 
