@@ -127,7 +127,7 @@ def _add_field_notes(workbook: Workbook) -> None:
         ("isReplenishable", "TRUE if this warehouse should be replenished by the planning engine; FALSE/N/A otherwise."),
         ("isBranchStockable", "TRUE if this branch/location can hold branch stock; FALSE/N/A otherwise."),
         ("isRemote", "TRUE if this is an outlying/remote location; FALSE/N/A otherwise."),
-        ("warehouseStatusId", "Active/inactive/obsolete status. Suggested values: ACTIVE, INACTIVE, OBSOLETE, N/A."),
+        ("warehouseStatusId", "Derived in upload as active flag: Y when isObsolete is N, N when isObsolete is Y. Leave this blank in the workbook unless manually overriding later."),
         ("isObsolete", "Use Y when the warehouse/site is not being used, empty, or should not participate in planning. Use N for active planning warehouses."),
         ("activityEvidence", "Optional evidence/comment for recent stock movement or empty status. This is for review and is not a template field."),
     ]

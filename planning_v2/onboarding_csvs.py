@@ -18,7 +18,7 @@ from planning_v2.issue_tracker import (
     read_issue_tracker,
 )
 from planning_v2.schemas import CONFIRMED_OUTPUT_OBJECTS, PENDING_OUTPUT_OBJECTS
-from planning_v2.sap_extracts import fetch_live_purchase_orders, fetch_live_template_sources, fetch_recent_warehouse_movements
+from planning_v2.sap_extracts import fetch_live_purchase_orders, fetch_live_template_sources
 from planning_v2.template_specs import template_columns
 
 
@@ -32,7 +32,15 @@ POPULATED_TEMPLATE_FIELDS = {
     },
     "Warehouses": {
         "warehouseId": "SAP Service Layer Warehouses:WarehouseCode",
+        "addressId": "Manual fill workbook:addressId; currently warehouse code per user mapping",
+        "returnWarehouseId": "Manual fill workbook:returnWarehouseId",
+        "supplyWarehouseId": "Manual fill workbook:supplyWarehouseId",
+        "warehouseTypeId": "Manual fill workbook:warehouseTypeId",
         "warehouseDescription": "SAP Service Layer Warehouses:WarehouseName",
+        "isReplenishable": "Manual fill workbook:isReplenishable",
+        "isBranchStockable": "Manual fill workbook:isBranchStockable",
+        "isRemote": "Manual fill workbook:isRemote",
+        "warehouseStatusId": "Manual fill workbook:isObsolete inverted to is_active flag (Y active, N obsolete)",
     },
     "WarehouseStockOnHand": {
         "partCode": "SAP Service Layer SQLQueries:OITW.ItemCode",
@@ -133,7 +141,6 @@ def generate_onboarding_csvs(cfg: PlanningConfig, out_dir: Path) -> list[Path]:
     template_dir.mkdir(parents=True, exist_ok=True)
 
     parts, warehouses, inventory = fetch_live_template_sources(cfg)
-    recent_movements = fetch_recent_warehouse_movements(cfg)
     purchase_orders = fetch_live_purchase_orders(cfg)
     usage = _read_stock_audit(_stock_audit_3y_path(cfg))
     stock_flow = pd.DataFrame()
@@ -157,6 +164,7 @@ def generate_onboarding_csvs(cfg: PlanningConfig, out_dir: Path) -> list[Path]:
         masters,
         purchase_orders,
         issue_tracker,
+        manual_warehouses,
     )
 
     for object_name, df in outputs.items():
@@ -164,7 +172,7 @@ def generate_onboarding_csvs(cfg: PlanningConfig, out_dir: Path) -> list[Path]:
 
     validation = validate_template_outputs(csv_dir, outputs, templates)
     written.append(_write_csv(validation, out_dir.parent / "validation_summary.csv"))
-    written.extend(write_review_evidence(out_dir.parent / "review_evidence", usage, purchase_orders, issue_tracker, masters))
+    written.extend(write_review_evidence(out_dir.parent / "review_evidence", usage, purchase_orders, issue_tracker, masters, manual_warehouses))
     return written
 
 
@@ -180,13 +188,14 @@ def build_template_outputs(
     masters: pd.DataFrame | None = None,
     purchase_orders: pd.DataFrame | None = None,
     issue_tracker: pd.DataFrame | None = None,
+    manual_warehouses: pd.DataFrame | None = None,
 ) -> dict[str, pd.DataFrame]:
     outputs: dict[str, pd.DataFrame] = {}
     for object_name, columns in templates.items():
         if object_name == "Parts":
             outputs[object_name] = build_template_parts(parts, columns, spi, masters)
         elif object_name == "Warehouses":
-            outputs[object_name] = build_template_warehouses(warehouses, columns)
+            outputs[object_name] = build_template_warehouses(warehouses, columns, manual_warehouses)
         elif object_name == "WarehouseStockOnHand":
             outputs[object_name] = build_template_stock_on_hand(inventory, columns, masters)
         elif object_name == "Customers":
@@ -571,6 +580,7 @@ def write_review_evidence(
     purchase_orders: pd.DataFrame,
     issue_tracker: pd.DataFrame,
     masters: pd.DataFrame | None,
+    manual_warehouses: pd.DataFrame | None = None,
 ) -> list[Path]:
     evidence_dir.mkdir(parents=True, exist_ok=True)
     files = [
@@ -579,10 +589,16 @@ def write_review_evidence(
         (purchase_order_reconciliation(purchase_orders, issue_tracker, masters), evidence_dir / "PurchaseOrders_Ticket_Reconciliation.csv"),
         (issue_tracker_evidence_rows(issue_tracker, masters), evidence_dir / "IssueTracker_Line_Evidence.csv"),
     ]
+    if manual_warehouses is not None and not manual_warehouses.empty:
+        files.append((build_warehouse_manual_evidence(manual_warehouses), evidence_dir / "Warehouses_Manual_Evidence.csv"))
     return [_write_csv(df, path) for df, path in files]
 
 
-def build_template_warehouses(warehouses: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+def build_template_warehouses(
+    warehouses: pd.DataFrame,
+    columns: list[str],
+    manual_warehouses: pd.DataFrame | None = None,
+) -> pd.DataFrame:
     if warehouses.empty:
         return pd.DataFrame(columns=columns)
     out = _blank_template(columns, len(warehouses))
@@ -590,7 +606,52 @@ def build_template_warehouses(warehouses: pd.DataFrame, columns: list[str]) -> p
         out["warehouseId"] = _col(warehouses, "WarehouseCode")
     if "warehouseDescription" in out.columns:
         out["warehouseDescription"] = _col(warehouses, "WarehouseName")
+    if manual_warehouses is not None and not manual_warehouses.empty and "warehouseId" in manual_warehouses.columns:
+        manual = manual_warehouses.copy()
+        manual["warehouseId"] = manual["warehouseId"].astype(str).str.strip()
+        manual_by_id = manual.drop_duplicates(subset=["warehouseId"], keep="first").set_index("warehouseId")
+        warehouse_ids = out["warehouseId"].astype(str).str.strip() if "warehouseId" in out.columns else pd.Series([""] * len(out))
+        for column in [
+            "addressId",
+            "returnWarehouseId",
+            "supplyWarehouseId",
+            "warehouseTypeId",
+            "isReplenishable",
+            "isBranchStockable",
+            "isRemote",
+            "warehouseStatusId",
+        ]:
+            if column in out.columns and column in manual_by_id.columns:
+                out[column] = warehouse_ids.map(manual_by_id[column]).fillna("")
+        if "warehouseStatusId" in out.columns and "isObsolete" in manual_by_id.columns:
+            obsolete = warehouse_ids.map(manual_by_id["isObsolete"]).fillna("").astype(str).str.strip().str.upper()
+            out["warehouseStatusId"] = ""
+            known = obsolete.isin(["Y", "N"])
+            out.loc[known, "warehouseStatusId"] = obsolete.loc[known].map({"Y": "N", "N": "Y"})
     return out.drop_duplicates(subset=["warehouseId"], keep="first") if "warehouseId" in out.columns else out
+
+
+def build_warehouse_manual_evidence(manual_warehouses: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "warehouseId",
+        "warehouseDescription",
+        "addressId",
+        "returnWarehouseId",
+        "supplyWarehouseId",
+        "warehouseTypeId",
+        "isReplenishable",
+        "isBranchStockable",
+        "isRemote",
+        "warehouseStatusId",
+        "isObsolete",
+        "activityEvidence",
+        "Notes",
+    ]
+    out = manual_warehouses.copy()
+    for column in columns:
+        if column not in out.columns:
+            out[column] = ""
+    return out[columns].drop_duplicates(subset=["warehouseId"], keep="first")
 
 
 def build_template_stock_on_hand(

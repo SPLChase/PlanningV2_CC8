@@ -10,6 +10,7 @@ from planning_v2.onboarding_csvs import (
     build_template_parts,
     build_template_parts_usage,
     build_template_purchase_orders,
+    build_template_warehouses,
     build_template_stock_on_hand,
     filter_active_warehouses,
     build_stock_detail,
@@ -78,6 +79,43 @@ class OnboardingCsvTests(unittest.TestCase):
 
         self.assertEqual(list(filtered_inventory["WarehouseCode"]), ["ACTIVE"])
         self.assertEqual(list(filtered_warehouses["WarehouseCode"]), ["ACTIVE"])
+
+    def test_template_warehouses_maps_manual_answers_and_inverts_obsolete_status(self) -> None:
+        warehouses = pd.DataFrame({"WarehouseCode": ["WH1", "WH2"], "WarehouseName": ["Main", "Old"]})
+        manual = pd.DataFrame(
+            {
+                "warehouseId": ["WH1", "WH2"],
+                "addressId": ["WH1", "WH2"],
+                "returnWarehouseId": ["RET", "RET"],
+                "supplyWarehouseId": ["MAIN", ""],
+                "warehouseTypeId": ["CUSTOMER", "VIRTUAL"],
+                "isReplenishable": ["TRUE", "FALSE"],
+                "isBranchStockable": ["TRUE", "FALSE"],
+                "isRemote": ["FALSE", "TRUE"],
+                "isObsolete": ["N", "Y"],
+            }
+        )
+
+        out = build_template_warehouses(
+            warehouses,
+            [
+                "warehouseId",
+                "addressId",
+                "returnWarehouseId",
+                "supplyWarehouseId",
+                "warehouseTypeId",
+                "warehouseDescription",
+                "isReplenishable",
+                "isBranchStockable",
+                "isRemote",
+                "warehouseStatusId",
+            ],
+            manual,
+        )
+
+        self.assertEqual(out.loc[0, "addressId"], "WH1")
+        self.assertEqual(out.loc[0, "warehouseStatusId"], "Y")
+        self.assertEqual(out.loc[1, "warehouseStatusId"], "N")
 
     def test_template_parts_leaves_unproven_primary_fields_blank(self) -> None:
         parts = pd.DataFrame({"ItemNo": ["A1"], "SPLMaster": ["SPL1"], "ItemDescription": ["Part A"], "DisplayItemNo": ["A1"]})
