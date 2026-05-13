@@ -83,6 +83,8 @@ This repo is for onboarding CoCre8 data into the external Planning V2 Excel/CSV 
 - `Warehouses.csv`:
   - SAP supplies `warehouseId` and `warehouseDescription`.
   - Many remaining fields are manual/not applicable for CoCre8; provide a simple fill-in workbook when needed.
+  - Do not remove unused, empty, virtual, faulty-return, or quarantine warehouses from the manual fill-in workbook. The data dictionary indicates unused/empty sites should be marked obsolete instead.
+  - If `supplyWarehouseId` is blank in the user's fill-in workbook, treat that as a signal that the warehouse is virtual/quarantine/faulty-return/non-replenishable, not as a reason to delete the row.
 - `PartsUsage.csv`:
   - Use Stock Audit Report DN rows for usage quantity/date/warehouse.
   - Missing customer/order/serial/resolution fields need careful investigation; do not infer them casually.

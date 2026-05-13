@@ -66,6 +66,36 @@ ORDER BY
 """.strip()
 
 
+def build_recent_warehouse_movements_sql(cutoff_date: str) -> str:
+    return f"""
+SELECT
+    M."WarehouseCode" AS "WarehouseCode",
+    SUM(M."MovementCount") AS "MovementCount",
+    MAX(M."LastMovementDate") AS "LastMovementDate"
+FROM (
+    SELECT
+        D1."WhsCode" AS "WarehouseCode",
+        COUNT(*) AS "MovementCount",
+        MAX(D0."DocDate") AS "LastMovementDate"
+    FROM DLN1 D1
+    INNER JOIN ODLN D0 ON D0."DocEntry" = D1."DocEntry"
+    WHERE D0."DocDate" >= '{cutoff_date}'
+    GROUP BY D1."WhsCode"
+    UNION ALL
+    SELECT
+        G1."WhsCode" AS "WarehouseCode",
+        COUNT(*) AS "MovementCount",
+        MAX(G0."DocDate") AS "LastMovementDate"
+    FROM PDN1 G1
+    INNER JOIN OPDN G0 ON G0."DocEntry" = G1."DocEntry"
+    WHERE G0."DocDate" >= '{cutoff_date}'
+    GROUP BY G1."WhsCode"
+) M
+GROUP BY M."WarehouseCode"
+ORDER BY M."WarehouseCode"
+""".strip()
+
+
 def build_purchase_order_lines_sql() -> str:
     return """
 SELECT

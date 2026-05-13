@@ -11,6 +11,7 @@ from planning_v2.onboarding_csvs import (
     build_template_parts_usage,
     build_template_purchase_orders,
     build_template_stock_on_hand,
+    filter_active_warehouses,
     build_stock_detail,
     validate_outputs,
 )
@@ -54,6 +55,29 @@ class OnboardingCsvTests(unittest.TestCase):
         self.assertEqual(stock.loc[0, "quantityOnHand"], 2)
         self.assertEqual(stock.loc[0, "inventoryType"], "")
         self.assertNotEqual(stock.loc[0, "uniqueId"], "")
+
+    def test_warehouse_activity_helper_can_identify_inactive_without_deleting_fill_rows(self) -> None:
+        inventory = pd.DataFrame(
+            {
+                "ItemNo": ["A1", "B2"],
+                "WarehouseCode": ["ACTIVE", "EMPTY"],
+                "OnHand": [1, 0],
+                "IsCommited": [0, 0],
+                "OnOrder": [0, 0],
+            }
+        )
+        warehouses = pd.DataFrame(
+            {
+                "WarehouseCode": ["ACTIVE", "EMPTY"],
+                "WarehouseName": ["Active", "Empty"],
+            }
+        )
+        movements = pd.DataFrame({"WarehouseCode": ["ACTIVE"], "MovementCount": [2]})
+
+        filtered_inventory, filtered_warehouses = filter_active_warehouses(inventory, warehouses, movements)
+
+        self.assertEqual(list(filtered_inventory["WarehouseCode"]), ["ACTIVE"])
+        self.assertEqual(list(filtered_warehouses["WarehouseCode"]), ["ACTIVE"])
 
     def test_template_parts_leaves_unproven_primary_fields_blank(self) -> None:
         parts = pd.DataFrame({"ItemNo": ["A1"], "SPLMaster": ["SPL1"], "ItemDescription": ["Part A"], "DisplayItemNo": ["A1"]})

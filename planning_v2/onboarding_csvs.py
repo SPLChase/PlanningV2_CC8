@@ -18,7 +18,7 @@ from planning_v2.issue_tracker import (
     read_issue_tracker,
 )
 from planning_v2.schemas import CONFIRMED_OUTPUT_OBJECTS, PENDING_OUTPUT_OBJECTS
-from planning_v2.sap_extracts import fetch_live_purchase_orders, fetch_live_template_sources
+from planning_v2.sap_extracts import fetch_live_purchase_orders, fetch_live_template_sources, fetch_recent_warehouse_movements
 from planning_v2.template_specs import template_columns
 
 
@@ -133,6 +133,7 @@ def generate_onboarding_csvs(cfg: PlanningConfig, out_dir: Path) -> list[Path]:
     template_dir.mkdir(parents=True, exist_ok=True)
 
     parts, warehouses, inventory = fetch_live_template_sources(cfg)
+    recent_movements = fetch_recent_warehouse_movements(cfg)
     purchase_orders = fetch_live_purchase_orders(cfg)
     usage = _read_stock_audit(_stock_audit_3y_path(cfg))
     stock_flow = pd.DataFrame()
@@ -140,6 +141,7 @@ def generate_onboarding_csvs(cfg: PlanningConfig, out_dir: Path) -> list[Path]:
     masters = _read_masters(cfg.reference_dir / "masters.csv")
     spi = _read_spi(cfg.exco_source_dir / "SPI_DATA.csv")
     issue_tracker = read_issue_tracker(cfg.issue_tracker_csv)
+    manual_warehouses = read_manual_warehouse_fill(cfg)
 
     written: list[Path] = []
     templates = template_columns(cfg.samples_dir)
@@ -229,6 +231,57 @@ def _stock_audit_3y_path(cfg: PlanningConfig) -> Path:
         if path.exists():
             return path
     return candidates[0]
+
+
+def read_manual_warehouse_fill(cfg: PlanningConfig) -> pd.DataFrame:
+    candidates = [
+        Path("docs") / "manual-fill" / "Warehouses_Missing_Fields_To_Fill_simple.xlsx",
+        Path("docs") / "manual-fill" / "Warehouses_Missing_Fields_To_Fill.xlsx",
+    ]
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            return pd.read_excel(path, sheet_name="Warehouses To Fill", dtype=str).fillna("")
+        except Exception:
+            continue
+    return pd.DataFrame()
+
+
+def filter_active_warehouses(
+    inventory: pd.DataFrame,
+    warehouses: pd.DataFrame,
+    recent_movements: pd.DataFrame,
+    manual_warehouses: pd.DataFrame | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if inventory.empty or "WarehouseCode" not in inventory.columns:
+        return inventory, warehouses
+    work = inventory.copy()
+    stock_cols = [column for column in ["OnHand", "IsCommited", "OnOrder"] if column in work.columns]
+    if stock_cols:
+        non_empty = work[stock_cols].apply(_to_number).sum(axis=1).ne(0)
+        stock_warehouses = set(work.loc[non_empty, "WarehouseCode"].astype(str).str.strip())
+    else:
+        stock_warehouses = set(work["WarehouseCode"].astype(str).str.strip())
+    movement_warehouses = set()
+    if not recent_movements.empty and "WarehouseCode" in recent_movements.columns:
+        movement_warehouses = set(recent_movements["WarehouseCode"].astype(str).str.strip())
+    active = stock_warehouses & movement_warehouses if movement_warehouses else stock_warehouses
+
+    if manual_warehouses is not None and not manual_warehouses.empty and {"warehouseId", "supplyWarehouseId"}.issubset(manual_warehouses.columns):
+        manual = manual_warehouses.copy()
+        manual["warehouseId"] = manual["warehouseId"].astype(str).str.strip()
+        manual["supplyWarehouseId"] = manual["supplyWarehouseId"].astype(str).str.strip()
+        replenishable = set(manual.loc[manual["supplyWarehouseId"].ne(""), "warehouseId"])
+        known_manual = set(manual["warehouseId"])
+        active = {warehouse for warehouse in active if warehouse not in known_manual or warehouse in replenishable}
+
+    filtered_inventory = work[work["WarehouseCode"].astype(str).str.strip().isin(active)].copy().reset_index(drop=True)
+    if warehouses.empty or "WarehouseCode" not in warehouses.columns:
+        filtered_warehouses = warehouses
+    else:
+        filtered_warehouses = warehouses[warehouses["WarehouseCode"].astype(str).str.strip().isin(active)].copy().reset_index(drop=True)
+    return filtered_inventory, filtered_warehouses
 
 
 def _read_stock_audit(path: Path) -> pd.DataFrame:

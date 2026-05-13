@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from datetime import date, timedelta
+
 import pandas as pd
 
 from planning_v2.config import PlanningConfig
 from planning_v2.sap_queries import (
     build_purchase_order_lines_sql,
     build_purchase_order_receipts_sql,
+    build_recent_warehouse_movements_sql,
     build_template_item_master_sql,
     build_template_stock_on_hand_sql,
 )
@@ -112,6 +115,24 @@ def fetch_live_template_sources(cfg: PlanningConfig) -> tuple[pd.DataFrame, pd.D
     )
 
     return items.reset_index(drop=True), stock_warehouses, stock.reset_index(drop=True)
+
+
+def fetch_recent_warehouse_movements(cfg: PlanningConfig, today: date | None = None) -> pd.DataFrame:
+    cutoff = ((today or date.today()) - timedelta(days=365)).isoformat()
+    with SapServiceLayer(cfg) as sap:
+        sap.ensure_sql_query(f"{cfg.sql_query_code}_RECENT_WH_MOVES", build_recent_warehouse_movements_sql(cutoff))
+        rows = sap.run_sql_query(f"{cfg.sql_query_code}_RECENT_WH_MOVES")
+    moves = pd.DataFrame(rows)
+    if moves.empty:
+        return pd.DataFrame(columns=["WarehouseCode", "MovementCount", "LastMovementDate"])
+    for column in ["WarehouseCode", "LastMovementDate"]:
+        if column not in moves.columns:
+            moves[column] = ""
+        moves[column] = moves[column].map(_clean_text)
+    if "MovementCount" not in moves.columns:
+        moves["MovementCount"] = 0
+    moves["MovementCount"] = _to_number(moves["MovementCount"])
+    return moves.drop_duplicates(subset=["WarehouseCode"], keep="first").reset_index(drop=True)
 
 
 def fetch_live_purchase_orders(cfg: PlanningConfig) -> pd.DataFrame:
