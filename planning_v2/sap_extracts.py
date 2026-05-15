@@ -8,6 +8,7 @@ import pandas as pd
 
 from planning_v2.config import PlanningConfig
 from planning_v2.sap_queries import (
+    build_delivery_note_usage_sql,
     build_purchase_order_lines_sql,
     build_purchase_order_receipts_sql,
     build_recent_warehouse_movements_sql,
@@ -133,6 +134,64 @@ def fetch_recent_warehouse_movements(cfg: PlanningConfig, today: date | None = N
         moves["MovementCount"] = 0
     moves["MovementCount"] = _to_number(moves["MovementCount"])
     return moves.drop_duplicates(subset=["WarehouseCode"], keep="first").reset_index(drop=True)
+
+
+def fetch_live_delivery_note_usage(cfg: PlanningConfig, today: date | None = None) -> pd.DataFrame:
+    cutoff = ((today or date.today()) - timedelta(days=365 * 3)).isoformat()
+    with SapServiceLayer(cfg) as sap:
+        sap.ensure_sql_query(f"{cfg.sql_query_code}_DN_USAGE", build_delivery_note_usage_sql(cutoff))
+        rows = sap.run_sql_query(f"{cfg.sql_query_code}_DN_USAGE")
+
+    usage = pd.DataFrame(rows)
+    if usage.empty:
+        return pd.DataFrame(
+            columns=[
+                "DocEntry",
+                "DeliveryNoteNumber",
+                "DocDate",
+                "DocStatus",
+                "CardCode",
+                "CardName",
+                "CustomerRefNumber",
+                "Comments",
+                "BillToAddress",
+                "ShipToAddress",
+                "ShipToCode",
+                "PayToCode",
+                "LineNum",
+                "ItemNo",
+                "ItemDescription",
+                "Quantity",
+                "WarehouseCode",
+            ]
+        )
+
+    for column in [
+        "DeliveryNoteNumber",
+        "DocDate",
+        "DocStatus",
+        "CardCode",
+        "CardName",
+        "CustomerRefNumber",
+        "Comments",
+        "BillToAddress",
+        "ShipToAddress",
+        "ShipToCode",
+        "PayToCode",
+        "ItemNo",
+        "ItemDescription",
+        "WarehouseCode",
+    ]:
+        if column not in usage.columns:
+            usage[column] = ""
+        usage[column] = usage[column].map(_clean_text)
+    for column in ["DocEntry", "LineNum"]:
+        if column in usage.columns:
+            usage[column] = pd.to_numeric(usage[column], errors="coerce").fillna(-1).astype(int)
+    if "Quantity" not in usage.columns:
+        usage["Quantity"] = 0
+    usage["Quantity"] = _to_number(usage["Quantity"])
+    return usage.reset_index(drop=True)
 
 
 def fetch_live_purchase_orders(cfg: PlanningConfig) -> pd.DataFrame:

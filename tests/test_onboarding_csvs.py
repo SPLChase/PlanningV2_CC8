@@ -278,6 +278,49 @@ class OnboardingCsvTests(unittest.TestCase):
         self.assertEqual(out.loc[0, "partCode"], "ACTUALALT")
         self.assertEqual(out.loc[0, "Master"], "SPL1")
 
+    def test_template_parts_usage_enriches_sap_delivery_note_context(self) -> None:
+        usage = pd.DataFrame(
+            {
+                "DeliveryNoteNumber": ["50006351"],
+                "DocDate": ["20251017"],
+                "CustomerRefNumber": ["67548724"],
+                "Comments": [
+                    "Part nr 38062982 [HD SAS].\rCall Nr 67548724\rCustomer: Massmart\rWO 995005378555\rSerial number: YM6D008491\rSLA: TMS 8HRS Rec"
+                ],
+                "ItemNo": ["38062982"],
+                "WarehouseCode": ["FUJITSU"],
+                "Quantity": [1],
+            }
+        )
+        masters = pd.DataFrame({"SPL Master": ["SPL1"], "Items linked": ["38062982;ALT2"]})
+
+        out = build_template_parts_usage(
+            usage,
+            [
+                "orderNumber",
+                "requestId",
+                "customerCompanyCode",
+                "partCode",
+                "serialNumber",
+                "quantityUsed",
+                "partsUsedDateTime",
+                "Warehouse",
+                "deviceSerialNumber",
+                "Master",
+            ],
+            masters,
+        )
+
+        self.assertEqual(out.loc[0, "orderNumber"], "67548724")
+        self.assertEqual(out.loc[0, "requestId"], "67548724")
+        self.assertEqual(out.loc[0, "customerCompanyCode"], "Massmart")
+        self.assertEqual(out.loc[0, "partCode"], "38062982")
+        self.assertEqual(out.loc[0, "serialNumber"], "YM6D008491")
+        self.assertEqual(out.loc[0, "deviceSerialNumber"], "YM6D008491")
+        self.assertEqual(out.loc[0, "quantityUsed"], 1)
+        self.assertEqual(out.loc[0, "partsUsedDateTime"], "2025-10-17")
+        self.assertEqual(out.loc[0, "Master"], "SPL1")
+
     def test_template_purchase_orders_maps_sap_po_lines_and_receipts(self) -> None:
         source = pd.DataFrame(
             {

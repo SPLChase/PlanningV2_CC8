@@ -6,6 +6,7 @@ from pathlib import Path
 
 from planning_v2.config import PlanningConfig
 from planning_v2.sap_queries import (
+    build_delivery_note_usage_sql,
     build_open_po_sql,
     build_purchase_order_lines_sql,
     build_purchase_order_receipts_sql,
@@ -62,6 +63,11 @@ class SapQueryTests(unittest.TestCase):
             self.assertIn(token, line_sql)
         for token in ["OPDN", "PDN1", '"BaseType" = 22', "SUM", "MAX"]:
             self.assertIn(token, receipt_sql)
+
+    def test_delivery_note_usage_query_uses_delivery_header_context(self) -> None:
+        sql = build_delivery_note_usage_sql("2023-05-16")
+        for token in ["ODLN", "DLN1", '"NumAtCard"', '"Comments"', '"Address2"', '"DocDate" >= ', '"CardCode" = \'FTS002\'']:
+            self.assertIn(token, sql)
 
 
 if __name__ == "__main__":

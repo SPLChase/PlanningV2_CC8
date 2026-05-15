@@ -96,6 +96,40 @@ ORDER BY M."WarehouseCode"
 """.strip()
 
 
+def build_delivery_note_usage_sql(cutoff_date: str, customer_code: str = "FTS002") -> str:
+    return f"""
+SELECT
+    D0."DocEntry" AS "DocEntry",
+    D0."DocNum" AS "DeliveryNoteNumber",
+    D0."DocDate" AS "DocDate",
+    D0."DocStatus" AS "DocStatus",
+    D0."CardCode" AS "CardCode",
+    D0."CardName" AS "CardName",
+    D0."NumAtCard" AS "CustomerRefNumber",
+    D0."Comments" AS "Comments",
+    D0."Address" AS "BillToAddress",
+    D0."Address2" AS "ShipToAddress",
+    D0."ShipToCode" AS "ShipToCode",
+    D0."PayToCode" AS "PayToCode",
+    D1."LineNum" AS "LineNum",
+    D1."ItemCode" AS "ItemNo",
+    D1."Dscription" AS "ItemDescription",
+    D1."Quantity" AS "Quantity",
+    D1."WhsCode" AS "WarehouseCode"
+FROM ODLN D0
+INNER JOIN DLN1 D1 ON D1."DocEntry" = D0."DocEntry"
+WHERE
+    D0."CANCELED" = 'N'
+    AND D0."DocDate" >= '{cutoff_date}'
+    AND D0."CardCode" = '{customer_code}'
+    AND D1."ItemCode" IS NOT NULL
+ORDER BY
+    D0."DocDate" DESC,
+    D0."DocNum" DESC,
+    D1."LineNum"
+""".strip()
+
+
 def build_purchase_order_lines_sql() -> str:
     return """
 SELECT

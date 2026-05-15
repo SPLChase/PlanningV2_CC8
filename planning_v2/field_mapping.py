@@ -277,7 +277,7 @@ def classify_field(field: TargetField) -> FieldDecision:
 
     if object_key == "parts_usage":
         if supplied.startswith("yes"):
-            return FieldDecision(field, STATUS_CONFIRMED, "Manual SAP stock audit report", "Stock Audit Report", field.field_name, _default_transform(field), "Medium", "Usage is allowed from the manually generated SAP Stock Audit Report; work-order linkage may need SAP verification.")
+            return FieldDecision(field, STATUS_CONFIRMED, "SAP Service Layer", "ODLN/DLN1 Delivery Notes", field.field_name, _default_transform(field), "Medium", "Delivery Notes are the source of truth for actual part usage; call/customer/serial values are enriched from ODLN.NumAtCard and ODLN.Comments when present.")
         return _sap_investigation_decision(field, "Usage detail exists, but serial/date granularity needs investigation.")
 
     if object_key in {"person", "node", "demand_trans_log"}:

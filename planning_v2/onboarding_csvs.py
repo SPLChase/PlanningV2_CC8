@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import zlib
 from pathlib import Path
 
@@ -18,7 +19,7 @@ from planning_v2.issue_tracker import (
     read_issue_tracker,
 )
 from planning_v2.schemas import CONFIRMED_OUTPUT_OBJECTS, PENDING_OUTPUT_OBJECTS
-from planning_v2.sap_extracts import fetch_live_purchase_orders, fetch_live_template_sources
+from planning_v2.sap_extracts import fetch_live_delivery_note_usage, fetch_live_purchase_orders, fetch_live_template_sources
 from planning_v2.template_specs import template_columns
 
 
@@ -52,11 +53,15 @@ POPULATED_TEMPLATE_FIELDS = {
     },
     "Customers": {},
     "PartsUsage": {
-        "orderNumber": "Stock Audit Report 3Y:Document for DN rows",
-        "partCode": "Stock Audit Report 3Y:Item No.",
-        "quantityUsed": "Stock Audit Report 3Y:absolute Quantity for negative DN rows",
-        "partsUsedDateTime": "Stock Audit Report 3Y:Posting Date",
-        "Warehouse": "Stock Audit Report 3Y:Whse",
+        "orderNumber": "SAP Service Layer SQLQueries:ODLN.NumAtCard or parsed Call Nr from ODLN.Comments",
+        "requestId": "SAP Service Layer SQLQueries:ODLN.NumAtCard or parsed Call Nr from ODLN.Comments",
+        "customerCompanyCode": "SAP Service Layer SQLQueries:parsed Customer from ODLN.Comments where present",
+        "partCode": "SAP Service Layer SQLQueries:DLN1.ItemCode actual delivered part",
+        "serialNumber": "SAP Service Layer SQLQueries:parsed Serial number from ODLN.Comments where present",
+        "quantityUsed": "SAP Service Layer SQLQueries:DLN1.Quantity",
+        "partsUsedDateTime": "SAP Service Layer SQLQueries:ODLN.DocDate",
+        "Warehouse": "SAP Service Layer SQLQueries:DLN1.WhsCode",
+        "deviceSerialNumber": "SAP Service Layer SQLQueries:parsed Serial number from ODLN.Comments where present",
         "Master": "Reference masters.csv:SPL Master by used part",
     },
     "PurchaseOrders": {
@@ -87,7 +92,6 @@ OUT_OF_SCOPE_TEMPLATE_FIELDS = {
     ("Parts", "isService"),
     ("Parts", "isTool"),
     ("Parts", "isSmallPart"),
-    ("PartsUsage", "requestId"),
     ("PurchaseOrders", "customerId"),
     ("PurchaseOrders", "requestTicketDateTime"),
     ("PurchaseOrders", "isResolved"),
@@ -143,7 +147,9 @@ def generate_onboarding_csvs(cfg: PlanningConfig, out_dir: Path) -> list[Path]:
 
     parts, warehouses, inventory = fetch_live_template_sources(cfg)
     purchase_orders = fetch_live_purchase_orders(cfg)
-    usage = _read_stock_audit(_stock_audit_3y_path(cfg))
+    usage = fetch_live_delivery_note_usage(cfg)
+    if usage.empty:
+        usage = _read_stock_audit(_stock_audit_3y_path(cfg))
     stock_flow = pd.DataFrame()
     customers = pd.DataFrame()
     masters = _read_masters(cfg.reference_dir / "masters.csv")
@@ -331,6 +337,41 @@ def _parse_any_date(value: object) -> str:
     return parsed.strftime("%Y-%m-%d")
 
 
+def _clean_extracted_value(value: object) -> str:
+    text = str(value or "").strip()
+    text = re.sub(r"\s+", " ", text)
+    return text.strip(" .;")
+
+
+def _parse_labeled_value(value: object, label: str) -> str:
+    text = str(value or "")
+    if not text.strip():
+        return ""
+    match = re.search(rf"{label}\s*:?\s*(.+?)(?:\r|\n|$)", text, flags=re.IGNORECASE)
+    return _clean_extracted_value(match.group(1)) if match else ""
+
+
+def _call_number_from_delivery_note(row: pd.Series) -> str:
+    customer_ref = _clean_extracted_value(row.get("CustomerRefNumber"))
+    if customer_ref:
+        return customer_ref
+    comments = row.get("Comments")
+    return _parse_labeled_value(comments, r"Call\s*(?:Nr|No|Number)?")
+
+
+def _filtered_sap_delivery_note_rows(usage: pd.DataFrame) -> pd.DataFrame:
+    work = usage.copy()
+    for column in ["DeliveryNoteNumber", "DocDate", "CustomerRefNumber", "Comments", "ItemNo", "WarehouseCode", "Quantity"]:
+        if column not in work.columns:
+            work[column] = ""
+    work["QuantityNum"] = _to_number(work["Quantity"])
+    return work[
+        work["DocDate"].astype(str).str.strip().ne("")
+        & work["ItemNo"].astype(str).str.strip().ne("")
+        & work["QuantityNum"].ne(0)
+    ].copy().reset_index(drop=True)
+
+
 def _spi_main_alt_lookup(spi: pd.DataFrame) -> dict[str, str]:
     if spi.empty or "Main alternative par" not in spi.columns:
         return {}
@@ -400,6 +441,57 @@ def build_template_parts_usage(
 ) -> pd.DataFrame:
     if usage.empty:
         return pd.DataFrame(columns=columns)
+    if {"DeliveryNoteNumber", "ItemNo", "WarehouseCode"}.issubset(usage.columns):
+        return _build_template_parts_usage_from_sap_delivery_notes(usage, columns, masters)
+    return _build_template_parts_usage_from_stock_audit(usage, columns, masters)
+
+
+def _build_template_parts_usage_from_sap_delivery_notes(
+    usage: pd.DataFrame,
+    columns: list[str],
+    masters: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    dn = _filtered_sap_delivery_note_rows(usage)
+    if dn.empty:
+        return pd.DataFrame(columns=columns)
+
+    call_number = dn.apply(_call_number_from_delivery_note, axis=1)
+    delivery_note = dn["DeliveryNoteNumber"].astype(str).str.strip()
+    fallback_order = "DN " + delivery_note
+    order_number = call_number.where(call_number.astype(str).str.strip().ne(""), fallback_order)
+    comments = dn["Comments"]
+    serial = comments.map(lambda value: _parse_labeled_value(value, r"Serial\s*(?:number|nr|no)?"))
+    customer = comments.map(lambda value: _parse_labeled_value(value, r"Customer"))
+
+    out = _blank_template(columns, len(dn))
+    if "orderNumber" in out.columns:
+        out["orderNumber"] = order_number
+    if "requestId" in out.columns:
+        out["requestId"] = call_number
+    if "customerCompanyCode" in out.columns:
+        out["customerCompanyCode"] = customer
+    if "partCode" in out.columns:
+        out["partCode"] = dn["ItemNo"].map(_part_key)
+    if "serialNumber" in out.columns:
+        out["serialNumber"] = serial
+    if "quantityUsed" in out.columns:
+        out["quantityUsed"] = dn["QuantityNum"].abs()
+    if "partsUsedDateTime" in out.columns:
+        out["partsUsedDateTime"] = dn["DocDate"].map(_sap_date)
+    if "Warehouse" in out.columns:
+        out["Warehouse"] = dn["WarehouseCode"].astype(str).str.strip()
+    if "deviceSerialNumber" in out.columns:
+        out["deviceSerialNumber"] = serial
+    if "Master" in out.columns:
+        out["Master"] = dn["ItemNo"].map(_part_key).map(_master_lookup(masters)).fillna("")
+    return out
+
+
+def _build_template_parts_usage_from_stock_audit(
+    usage: pd.DataFrame,
+    columns: list[str],
+    masters: pd.DataFrame | None = None,
+) -> pd.DataFrame:
     work = usage.copy()
     for column in ["Item No.", "Description"]:
         if column in work.columns:
@@ -544,8 +636,12 @@ def build_template_purchase_orders(
 def build_parts_usage_evidence(usage: pd.DataFrame, masters: pd.DataFrame | None) -> pd.DataFrame:
     columns = [
         "Source",
+        "deliveryNoteNumber",
         "orderNumber",
+        "requestId",
+        "customerCompanyCode",
         "actualPartNumber",
+        "serialNumber",
         "SPLMaster",
         "Warehouse",
         "quantityUsed",
@@ -554,19 +650,39 @@ def build_parts_usage_evidence(usage: pd.DataFrame, masters: pd.DataFrame | None
     ]
     if usage.empty:
         return pd.DataFrame(columns=columns)
+    source_name = "SAP Delivery Notes ODLN/DLN1" if "DeliveryNoteNumber" in usage.columns else "Stock Audit Report 3Y"
     template = build_template_parts_usage(
         usage,
-        ["orderNumber", "partCode", "Warehouse", "quantityUsed", "partsUsedDateTime"],
+        [
+            "orderNumber",
+            "requestId",
+            "customerCompanyCode",
+            "partCode",
+            "serialNumber",
+            "Warehouse",
+            "quantityUsed",
+            "partsUsedDateTime",
+        ],
         masters,
     )
     if template.empty:
         return pd.DataFrame(columns=columns)
     by_part = _master_lookup(masters)
+    if "DeliveryNoteNumber" in usage.columns:
+        source_rows = _filtered_sap_delivery_note_rows(usage)
+        delivery_notes = _col(source_rows, "DeliveryNoteNumber").astype(str).str.strip()
+    else:
+        delivery_notes = pd.Series([""] * len(template))
+    delivery_notes = delivery_notes.reset_index(drop=True).reindex(range(len(template)), fill_value="")
     out = pd.DataFrame(
         {
-            "Source": "Stock Audit Report 3Y",
+            "Source": source_name,
+            "deliveryNoteNumber": delivery_notes,
             "orderNumber": template["orderNumber"],
+            "requestId": template.get("requestId", pd.Series([""] * len(template))),
+            "customerCompanyCode": template.get("customerCompanyCode", pd.Series([""] * len(template))),
             "actualPartNumber": template["partCode"],
+            "serialNumber": template.get("serialNumber", pd.Series([""] * len(template))),
             "SPLMaster": template["partCode"].map(by_part).fillna(""),
             "Warehouse": template["Warehouse"],
             "quantityUsed": template["quantityUsed"],
