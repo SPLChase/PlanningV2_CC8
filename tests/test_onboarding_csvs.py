@@ -7,6 +7,7 @@ from pathlib import Path
 import pandas as pd
 
 from planning_v2.onboarding_csvs import (
+    build_template_part_cost,
     build_template_parts,
     build_template_parts_usage,
     build_template_parts_usage_from_issue_tracker,
@@ -458,6 +459,45 @@ class OnboardingCsvTests(unittest.TestCase):
         out = build_template_purchase_orders(source, ["purchaseOrderNumber", "partNumber", "demandStatus"], masters, issue_tracker)
 
         self.assertEqual(out.loc[0, "demandStatus"], "Approved")
+
+    def test_template_part_cost_uses_last_spi_price_as_of_last_po_month_and_weighted_average(self) -> None:
+        parts = pd.DataFrame(
+            {
+                "ItemNo": ["A1", "B2"],
+                "SPLMaster": ["SPL1", "SPL2"],
+            }
+        )
+        purchase_orders = pd.DataFrame(
+            {
+                "PartNumber": ["A1", "A1", "B2"],
+                "ApprovalDateTime": ["20260110", "20260320", ""],
+                "Quantity": [1, 3, 2],
+            }
+        )
+        spi = pd.DataFrame(
+            {
+                "PartNumber": ["A1", "A1", "B2"],
+                "Material": ["", "", ""],
+                "ListPrice": ["100", "200", "50"],
+                "SourceDate": ["2026-01-01", "2026-03-01", "2026-02-01"],
+                "SourceFile": ["Jan", "Mar", "Feb"],
+            }
+        )
+
+        out = build_template_part_cost(
+            parts,
+            purchase_orders,
+            ["partCode", "cost", "currencyCode", "averageCost", "averageRepairCost"],
+            spi,
+        )
+
+        a1 = out[out["partCode"].eq("A1")].iloc[0]
+        b2 = out[out["partCode"].eq("B2")].iloc[0]
+        self.assertEqual(a1["cost"], 144.0)
+        self.assertEqual(a1["averageCost"], 126.0)
+        self.assertEqual(a1["currencyCode"], "EUR")
+        self.assertEqual(a1["averageRepairCost"], "")
+        self.assertEqual(b2["cost"], 36.0)
 
     def test_validation_flags_missing_confirmed_csv_columns(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -78,6 +78,12 @@ POPULATED_TEMPLATE_FIELDS = {
         "quantityReceived": "SAP Service Layer SQLQueries:PDN1.Quantity summed by PO line",
         "receivedDateTime": "SAP Service Layer SQLQueries:OPDN.DocDate max by PO line",
     },
+    "PartCost": {
+        "partCode": "Actual SAP/Fujitsu part id from live SAP parts and PO lines",
+        "cost": "Current SPI_DATA.csv then Reference/SPI_Historical newest-first:ListPrice multiplied by 0.72, selected as of last PO month where possible",
+        "currencyCode": "Business rule: EUR for SPI CoCre8 costs",
+        "averageCost": "PO quantity-weighted average of SPI-derived CoCre8 costs across SAP PO history",
+    },
 }
 
 OUT_OF_SCOPE_TEMPLATE_FIELDS = {
@@ -105,6 +111,7 @@ OUT_OF_SCOPE_TEMPLATE_FIELDS = {
 
 ROW_REQUIRED_TEMPLATE_FIELDS = {
     "PurchaseOrders": ["purchaseOrderNumber", "lineCost"],
+    "PartCost": ["partCode", "cost", "currencyCode", "averageCost"],
 }
 
 
@@ -160,6 +167,7 @@ def generate_onboarding_csvs(cfg: PlanningConfig, out_dir: Path) -> list[Path]:
     masters = _read_masters(cfg.reference_dir / "masters.csv")
     spi = _read_spi(cfg.exco_source_dir / "SPI_DATA.csv")
     spi_cost_history = _read_spi_cost_history(cfg.reference_dir / "SPI_Historical")
+    combined_spi_costs = _combine_spi_cost_sources(spi, spi_cost_history)
     issue_tracker = read_issue_tracker(cfg.issue_tracker_csv)
     manual_warehouses = read_manual_warehouse_fill(cfg)
 
@@ -186,7 +194,18 @@ def generate_onboarding_csvs(cfg: PlanningConfig, out_dir: Path) -> list[Path]:
 
     validation = validate_template_outputs(csv_dir, outputs, templates)
     written.append(_write_csv(validation, out_dir.parent / "validation_summary.csv"))
-    written.extend(write_review_evidence(out_dir.parent / "review_evidence", usage, purchase_orders, issue_tracker, masters, manual_warehouses))
+    written.extend(
+        write_review_evidence(
+            out_dir.parent / "review_evidence",
+            usage,
+            purchase_orders,
+            issue_tracker,
+            masters,
+            manual_warehouses,
+            parts,
+            combined_spi_costs,
+        )
+    )
     return written
 
 
@@ -218,12 +237,21 @@ def build_template_outputs(
         elif object_name == "PartsUsage":
             outputs[object_name] = build_template_parts_usage(usage, columns, masters, issue_tracker)
         elif object_name == "PurchaseOrders":
+            combined_spi = _combine_spi_cost_sources(spi, spi_cost_history if spi_cost_history is not None else pd.DataFrame())
             outputs[object_name] = build_template_purchase_orders(
                 purchase_orders if purchase_orders is not None else pd.DataFrame(),
                 columns,
                 masters,
                 issue_tracker,
-                _combine_spi_cost_sources(spi, spi_cost_history if spi_cost_history is not None else pd.DataFrame()),
+                combined_spi,
+            )
+        elif object_name == "PartCost":
+            combined_spi = _combine_spi_cost_sources(spi, spi_cost_history if spi_cost_history is not None else pd.DataFrame())
+            outputs[object_name] = build_template_part_cost(
+                parts,
+                purchase_orders if purchase_orders is not None else pd.DataFrame(),
+                columns,
+                combined_spi,
             )
         else:
             outputs[object_name] = pd.DataFrame(columns=columns)
@@ -241,7 +269,23 @@ def _read_spi(path: Path) -> pd.DataFrame:
 
 
 def _combine_spi_cost_sources(current_spi: pd.DataFrame, historical_spi: pd.DataFrame) -> pd.DataFrame:
-    frames = [frame for frame in [current_spi, historical_spi] if frame is not None and not frame.empty]
+    current = current_spi.copy() if current_spi is not None and not current_spi.empty else pd.DataFrame()
+    if not current.empty:
+        if "SourceDate" not in current.columns:
+            current["SourceDate"] = date.today().isoformat()
+        else:
+            current["SourceDate"] = current["SourceDate"].where(
+                current["SourceDate"].astype(str).str.strip().ne(""),
+                date.today().isoformat(),
+            )
+        if "SourceFile" not in current.columns:
+            current["SourceFile"] = "SPI_DATA.csv"
+        else:
+            current["SourceFile"] = current["SourceFile"].where(
+                current["SourceFile"].astype(str).str.strip().ne(""),
+                "SPI_DATA.csv",
+            )
+    frames = [frame for frame in [current, historical_spi] if frame is not None and not frame.empty]
     if not frames:
         return pd.DataFrame()
     return pd.concat(frames, ignore_index=True, sort=False).fillna("")
@@ -479,19 +523,82 @@ def _spi_main_alt_lookup(spi: pd.DataFrame) -> dict[str, str]:
 
 
 def _spi_cocre8_cost_lookup(spi: pd.DataFrame) -> dict[str, float]:
+    records = _spi_cost_records(spi)
+    return {part: row["CoCre8Cost"] for part, row in _latest_cost_rows(records).items()}
+
+
+def _spi_cost_records(spi: pd.DataFrame) -> pd.DataFrame:
+    columns = ["PartKey", "CoCre8Cost", "SourceDate", "SourceFile"]
     if spi.empty or "ListPrice" not in spi.columns:
-        return {}
-    lookup: dict[str, float] = {}
-    list_price = _to_number(spi["ListPrice"])
-    for idx, row in spi.iterrows():
-        cost = round(float(list_price.iloc[idx]) * 0.72, 2)
-        if cost == 0:
-            continue
+        return pd.DataFrame(columns=columns)
+    work = spi.copy()
+    for column in ["Material", "PartNumber", "SourceDate", "SourceFile"]:
+        if column not in work.columns:
+            work[column] = ""
+    work["ListPriceNum"] = _to_number(work["ListPrice"])
+    work["CoCre8Cost"] = (work["ListPriceNum"] * 0.72).round(2)
+    work["SourceDateParsed"] = pd.to_datetime(work["SourceDate"], errors="coerce")
+    rows: list[dict[str, object]] = []
+    for _, row in work[work["CoCre8Cost"].gt(0)].iterrows():
         for column in ["PartNumber", "Material"]:
             key = _part_key(row.get(column, ""))
-            if key and key not in lookup:
-                lookup[key] = cost
-    return lookup
+            if not key:
+                continue
+            rows.append(
+                {
+                    "PartKey": key,
+                    "CoCre8Cost": float(row["CoCre8Cost"]),
+                    "SourceDate": row["SourceDateParsed"],
+                    "SourceFile": str(row.get("SourceFile", "") or "").strip(),
+                }
+            )
+    if not rows:
+        return pd.DataFrame(columns=columns)
+    return pd.DataFrame(rows).drop_duplicates(subset=["PartKey", "CoCre8Cost", "SourceDate", "SourceFile"], keep="first")
+
+
+def _latest_cost_rows(records: pd.DataFrame) -> dict[str, dict[str, object]]:
+    if records.empty:
+        return {}
+    work = records.copy()
+    work["SourceDate"] = pd.to_datetime(work["SourceDate"], errors="coerce")
+    work = work.sort_values(["PartKey", "SourceDate"], ascending=[True, False], na_position="last")
+    return work.drop_duplicates(subset=["PartKey"], keep="first").set_index("PartKey").to_dict("index")
+
+
+def _month_end(value: object) -> pd.Timestamp | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    parsed = pd.to_datetime(text, format="%Y%m%d", errors="coerce")
+    if pd.isna(parsed):
+        parsed = pd.to_datetime(text, errors="coerce")
+    if pd.isna(parsed):
+        return None
+    return parsed + pd.offsets.MonthEnd(0)
+
+
+def _cost_row_as_of(records_by_part: dict[str, pd.DataFrame], part: object, as_of: pd.Timestamp | None) -> dict[str, object] | None:
+    key = _part_key(part)
+    records = records_by_part.get(key)
+    if records is None or records.empty:
+        return None
+    candidates = records
+    if as_of is not None:
+        dated = records[records["SourceDate"].notna() & records["SourceDate"].le(as_of)]
+        if not dated.empty:
+            candidates = dated
+    selected = candidates.sort_values("SourceDate", ascending=False, na_position="last").iloc[0]
+    return selected.to_dict()
+
+
+def _cost_records_by_part(records: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    if records.empty:
+        return {}
+    work = records.copy()
+    work["SourceDate"] = pd.to_datetime(work["SourceDate"], errors="coerce")
+    work = work.sort_values(["PartKey", "SourceDate"], ascending=[True, False], na_position="last")
+    return {part: group.reset_index(drop=True) for part, group in work.groupby("PartKey", dropna=False)}
 
 
 def _master_lookup(masters: pd.DataFrame | None) -> dict[str, str]:
@@ -720,8 +827,15 @@ def build_template_purchase_orders(
     if "quantity" in out.columns:
         out["quantity"] = _to_number(_col(source, "Quantity"))
     if "lineCost" in out.columns:
-        cost_by_part = _spi_cocre8_cost_lookup(spi if spi is not None else pd.DataFrame())
-        out["lineCost"] = _col(source, "PartNumber").map(_part_key).map(cost_by_part).fillna("")
+        records_by_part = _cost_records_by_part(_spi_cost_records(spi if spi is not None else pd.DataFrame()))
+        po_dates = _col(source, "ApprovalDateTime").map(_month_end)
+        out["lineCost"] = [
+            (row.get("CoCre8Cost") if row else "")
+            for row in (
+                _cost_row_as_of(records_by_part, part, as_of)
+                for part, as_of in zip(_col(source, "PartNumber"), po_dates)
+            )
+        ]
     if "quantityReceived" in out.columns:
         out["quantityReceived"] = _to_number(_col(source, "QuantityReceived"))
     if "receivedDateTime" in out.columns:
@@ -738,6 +852,126 @@ def build_template_purchase_orders(
             keys = list(zip(out.get("purchaseOrderNumber", pd.Series([""] * len(out))).map(_part_key), out.get("partNumber", pd.Series([""] * len(out))).map(_part_key)))
             out["demandStatus"] = [status_by_key.get(key, "") for key in keys]
     return out.drop_duplicates(keep="first")
+
+
+def _part_cost_rows(
+    parts: pd.DataFrame,
+    purchase_orders: pd.DataFrame,
+    spi: pd.DataFrame,
+    masters: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    columns = [
+        "partCode",
+        "SPLMaster",
+        "cost",
+        "currencyCode",
+        "averageCost",
+        "averageRepairCost",
+        "lastPoDate",
+        "costSourceDate",
+        "costSourceFile",
+        "poWeightedQuantity",
+        "poWeightedRows",
+        "averageCostBasis",
+        "EvidenceStatus",
+    ]
+    records = _spi_cost_records(spi)
+    if records.empty:
+        return pd.DataFrame(columns=columns)
+    records_by_part = _cost_records_by_part(records)
+    by_part = _master_lookup(masters)
+
+    source_parts: set[str] = set()
+    if not parts.empty:
+        item_keys = _col(parts, "ItemNo").map(_part_key)
+        if "SPLMaster" in parts.columns:
+            linked = parts["SPLMaster"].astype(str).str.strip().ne("")
+            source_parts.update(item_keys[linked].dropna().astype(str).str.strip())
+        else:
+            source_parts.update(item_keys.dropna().astype(str).str.strip())
+    if purchase_orders is not None and not purchase_orders.empty:
+        source_parts.update(_col(purchase_orders, "PartNumber").map(_part_key).dropna().astype(str).str.strip())
+    source_parts.discard("")
+
+    po = purchase_orders.copy() if purchase_orders is not None and not purchase_orders.empty else pd.DataFrame()
+    if po.empty:
+        po = pd.DataFrame(columns=["PartNumber", "ApprovalDateTime", "Quantity"])
+    po["PartKey"] = _col(po, "PartNumber").map(_part_key)
+    po["PoMonthEnd"] = _col(po, "ApprovalDateTime").map(_month_end)
+    po["PoDate"] = _col(po, "ApprovalDateTime").map(_sap_date)
+    po["QuantityNum"] = _to_number(_col(po, "Quantity"))
+
+    rows: list[dict[str, object]] = []
+    for part in sorted(source_parts):
+        part_pos = po[po["PartKey"].eq(part)].copy()
+        last_po_month = None
+        last_po_date = ""
+        if not part_pos.empty:
+            dated = part_pos[part_pos["PoMonthEnd"].notna()].sort_values("PoMonthEnd")
+            if not dated.empty:
+                last_po_month = dated.iloc[-1]["PoMonthEnd"]
+                last_po_date = str(dated.iloc[-1]["PoDate"] or "")
+        cost_row = _cost_row_as_of(records_by_part, part, last_po_month)
+        if not cost_row:
+            continue
+
+        weighted_total = 0.0
+        weighted_qty = 0.0
+        weighted_rows = 0
+        for _, po_row in part_pos.iterrows():
+            qty = float(po_row.get("QuantityNum", 0) or 0)
+            if qty <= 0:
+                continue
+            po_cost = _cost_row_as_of(records_by_part, part, po_row.get("PoMonthEnd"))
+            if not po_cost:
+                continue
+            weighted_total += float(po_cost["CoCre8Cost"]) * qty
+            weighted_qty += qty
+            weighted_rows += 1
+        if weighted_qty > 0:
+            average_cost = round(weighted_total / weighted_qty, 2)
+            average_basis = "PO quantity weighted"
+        else:
+            average_cost = float(cost_row["CoCre8Cost"])
+            average_basis = "No PO quantity; averageCost set to latest available cost"
+
+        source_date = cost_row.get("SourceDate")
+        source_date_text = "" if pd.isna(source_date) else pd.Timestamp(source_date).date().isoformat()
+        rows.append(
+            {
+                "partCode": part,
+                "SPLMaster": by_part.get(part, ""),
+                "cost": float(cost_row["CoCre8Cost"]),
+                "currencyCode": "EUR",
+                "averageCost": average_cost,
+                "averageRepairCost": "",
+                "lastPoDate": last_po_date,
+                "costSourceDate": source_date_text,
+                "costSourceFile": str(cost_row.get("SourceFile", "") or ""),
+                "poWeightedQuantity": round(weighted_qty, 2) if weighted_qty else "",
+                "poWeightedRows": weighted_rows if weighted_rows else "",
+                "averageCostBasis": average_basis,
+                "EvidenceStatus": "Ready" if by_part.get(part, "") else "Ready; no SPL Master mapping",
+            }
+        )
+    return pd.DataFrame(rows, columns=columns)
+
+
+def build_template_part_cost(
+    parts: pd.DataFrame,
+    purchase_orders: pd.DataFrame,
+    columns: list[str],
+    spi: pd.DataFrame,
+    masters: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    rows = _part_cost_rows(parts, purchase_orders, spi, masters)
+    if rows.empty:
+        return pd.DataFrame(columns=columns)
+    out = _blank_template(columns, len(rows))
+    for column in ["partCode", "cost", "currencyCode", "averageCost", "averageRepairCost"]:
+        if column in out.columns:
+            out[column] = rows[column]
+    return out.drop_duplicates(subset=["partCode"], keep="first") if "partCode" in out.columns else out
 
 
 def build_parts_usage_evidence(usage: pd.DataFrame, masters: pd.DataFrame | None) -> pd.DataFrame:
@@ -874,6 +1108,8 @@ def write_review_evidence(
     issue_tracker: pd.DataFrame,
     masters: pd.DataFrame | None,
     manual_warehouses: pd.DataFrame | None = None,
+    parts: pd.DataFrame | None = None,
+    spi_costs: pd.DataFrame | None = None,
 ) -> list[Path]:
     evidence_dir.mkdir(parents=True, exist_ok=True)
     files = [
@@ -881,6 +1117,15 @@ def write_review_evidence(
         (build_purchase_order_evidence(purchase_orders, masters, issue_tracker), evidence_dir / "PurchaseOrders_SPLMaster_Evidence.csv"),
         (purchase_order_reconciliation(purchase_orders, issue_tracker, masters), evidence_dir / "PurchaseOrders_Ticket_Reconciliation.csv"),
         (issue_tracker_evidence_rows(issue_tracker, masters), evidence_dir / "IssueTracker_Line_Evidence.csv"),
+        (
+            _part_cost_rows(
+                parts if parts is not None else pd.DataFrame(),
+                purchase_orders,
+                spi_costs if spi_costs is not None else pd.DataFrame(),
+                masters,
+            ),
+            evidence_dir / "PartCost_Evidence.csv",
+        ),
     ]
     if manual_warehouses is not None and not manual_warehouses.empty:
         files.append((build_warehouse_manual_evidence(manual_warehouses), evidence_dir / "Warehouses_Manual_Evidence.csv"))
