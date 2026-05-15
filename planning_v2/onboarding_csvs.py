@@ -73,7 +73,7 @@ POPULATED_TEMPLATE_FIELDS = {
         "vendorId": "SAP Service Layer SQLQueries:OPOR.CardCode",
         "partNumber": "SAP Service Layer SQLQueries:POR1.ItemCode",
         "quantity": "SAP Service Layer SQLQueries:POR1.Quantity",
-        "lineCost": "SAP Service Layer SQLQueries:POR1.LineTotal",
+        "lineCost": "SPI_DATA.csv:ListPrice multiplied by 0.72 CoCre8 cost factor",
         "quantityReceived": "SAP Service Layer SQLQueries:PDN1.Quantity summed by PO line",
         "receivedDateTime": "SAP Service Layer SQLQueries:OPDN.DocDate max by PO line",
     },
@@ -215,6 +215,7 @@ def build_template_outputs(
                 columns,
                 masters,
                 issue_tracker,
+                spi,
             )
         else:
             outputs[object_name] = pd.DataFrame(columns=columns)
@@ -386,6 +387,22 @@ def _spi_main_alt_lookup(spi: pd.DataFrame) -> dict[str, str]:
             key = _part_key(key_source)
             if key and key not in lookup:
                 lookup[key] = main_alt
+    return lookup
+
+
+def _spi_cocre8_cost_lookup(spi: pd.DataFrame) -> dict[str, float]:
+    if spi.empty or "ListPrice" not in spi.columns:
+        return {}
+    lookup: dict[str, float] = {}
+    list_price = _to_number(spi["ListPrice"])
+    for idx, row in spi.iterrows():
+        cost = round(float(list_price.iloc[idx]) * 0.72, 2)
+        if cost == 0:
+            continue
+        for column in ["PartNumber", "Material"]:
+            key = _part_key(row.get(column, ""))
+            if key and key not in lookup:
+                lookup[key] = cost
     return lookup
 
 
@@ -588,6 +605,7 @@ def build_template_purchase_orders(
     columns: list[str],
     masters: pd.DataFrame | None = None,
     issue_tracker: pd.DataFrame | None = None,
+    spi: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     if purchase_orders.empty:
         return pd.DataFrame(columns=columns)
@@ -614,7 +632,8 @@ def build_template_purchase_orders(
     if "quantity" in out.columns:
         out["quantity"] = _to_number(_col(source, "Quantity"))
     if "lineCost" in out.columns:
-        out["lineCost"] = _to_number(_col(source, "LineCost"))
+        cost_by_part = _spi_cocre8_cost_lookup(spi if spi is not None else pd.DataFrame())
+        out["lineCost"] = _col(source, "PartNumber").map(_part_key).map(cost_by_part).fillna("")
     if "quantityReceived" in out.columns:
         out["quantityReceived"] = _to_number(_col(source, "QuantityReceived"))
     if "receivedDateTime" in out.columns:
