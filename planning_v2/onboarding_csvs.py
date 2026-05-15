@@ -52,18 +52,12 @@ POPULATED_TEMPLATE_FIELDS = {
     },
     "Customers": {},
     "PartsUsage": {
-        "orderNumber": "CoCre8 HelpDesk issue tracker:Call Number",
-        "requestId": "CoCre8 HelpDesk issue tracker:Call Number",
-        "customerCompanyCode": "CoCre8 HelpDesk issue tracker:CustomerNormalized/Customer",
-        "orderStartDatetime": "CoCre8 HelpDesk issue tracker:Created",
-        "orderStatus": "CoCre8 HelpDesk issue tracker:Status",
-        "partCode": "CoCre8 HelpDesk issue tracker:DispatchPartNo when present, otherwise Part Nr",
-        "serialNumber": "CoCre8 HelpDesk issue tracker:Serial Nr",
-        "quantityUsed": "CoCre8 HelpDesk issue tracker:Quantity",
-        "partsUsedDateTime": "CoCre8 HelpDesk issue tracker:Created used as demand/usage date",
-        "Warehouse": "CoCre8 HelpDesk issue tracker:DispatchWarehouse",
-        "deviceSerialNumber": "CoCre8 HelpDesk issue tracker:Serial Nr",
-        "Master": "CoCre8 HelpDesk issue tracker:SPLMaster or masters.csv by part",
+        "orderNumber": "Stock Audit Report 3Y:Document for DN rows",
+        "partCode": "Stock Audit Report 3Y:Item No.",
+        "quantityUsed": "Stock Audit Report 3Y:absolute Quantity for negative DN rows",
+        "partsUsedDateTime": "Stock Audit Report 3Y:Posting Date",
+        "Warehouse": "Stock Audit Report 3Y:Whse",
+        "Master": "Reference masters.csv:SPL Master by used part",
     },
     "PurchaseOrders": {
         "purchaseOrderNumber": "SAP Service Layer SQLQueries:OPOR.DocNum",
@@ -404,10 +398,6 @@ def build_template_parts_usage(
     masters: pd.DataFrame | None = None,
     issue_tracker: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    if issue_tracker is not None and not issue_tracker.empty:
-        tracker_usage = build_template_parts_usage_from_issue_tracker(issue_tracker, columns, masters)
-        if not tracker_usage.empty:
-            return tracker_usage
     if usage.empty:
         return pd.DataFrame(columns=columns)
     work = usage.copy()

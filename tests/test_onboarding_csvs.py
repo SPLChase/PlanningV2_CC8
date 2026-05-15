@@ -188,7 +188,7 @@ class OnboardingCsvTests(unittest.TestCase):
 
         self.assertEqual(out.loc[0, "Master"], "SPL1")
 
-    def test_template_parts_usage_from_issue_tracker_uses_call_and_serial_fields(self) -> None:
+    def test_template_parts_usage_from_issue_tracker_can_build_review_rows(self) -> None:
         tracker = pd.DataFrame(
             {
                 "Call Number": ["71919593"],
@@ -233,7 +233,7 @@ class OnboardingCsvTests(unittest.TestCase):
         self.assertEqual(out.loc[0, "deviceSerialNumber"], "EWAA007343")
         self.assertEqual(out.loc[0, "Master"], "SPL1")
 
-    def test_template_parts_usage_from_issue_tracker_requires_call_number(self) -> None:
+    def test_template_parts_usage_from_issue_tracker_requires_call_number_for_review_rows(self) -> None:
         tracker = pd.DataFrame(
             {
                 "Call Number": ["", "71919593"],
@@ -250,6 +250,33 @@ class OnboardingCsvTests(unittest.TestCase):
 
         self.assertEqual(len(out), 1)
         self.assertEqual(out.loc[0, "orderNumber"], "71919593")
+
+    def test_template_parts_usage_prefers_stock_audit_actual_usage_over_helpdesk(self) -> None:
+        usage = pd.DataFrame(
+            {
+                "Item No.": ["ACTUALALT"],
+                "Description": ["Actual Part"],
+                "Posting Date": ["01/02/26"],
+                "Document": ["DN 1"],
+                "Whse": ["WH1"],
+                "Quantity": ["-1"],
+            }
+        )
+        tracker = pd.DataFrame(
+            {
+                "Call Number": ["71919593"],
+                "Created": ["2026/01/20"],
+                "Part Nr": ["REQUESTED"],
+                "Quantity": ["1"],
+            }
+        )
+        masters = pd.DataFrame({"SPL Master": ["SPL1"], "Items linked": ["ACTUALALT;REQUESTED"]})
+
+        out = build_template_parts_usage(usage, ["orderNumber", "partCode", "Master"], masters, tracker)
+
+        self.assertEqual(out.loc[0, "orderNumber"], "DN 1")
+        self.assertEqual(out.loc[0, "partCode"], "ACTUALALT")
+        self.assertEqual(out.loc[0, "Master"], "SPL1")
 
     def test_template_purchase_orders_maps_sap_po_lines_and_receipts(self) -> None:
         source = pd.DataFrame(

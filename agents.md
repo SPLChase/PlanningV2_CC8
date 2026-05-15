@@ -88,11 +88,11 @@ This repo is for onboarding CoCre8 data into the external Planning V2 Excel/CSV 
   - If `supplyWarehouseId` is blank in the user's fill-in workbook, treat that as a signal that the warehouse is virtual/quarantine/faulty-return/non-replenishable, not as a reason to delete the row.
   - `warehouseStatusId` is the active flag / newer name for active status. Map from manual `isObsolete`: `isObsolete = Y` -> `warehouseStatusId = N`; `isObsolete = N` -> `warehouseStatusId = Y`.
 - `PartsUsage.csv`:
-  - Use HelpDesk ticket rows as the upload base when call/ticket fields are required. `orderNumber` and `requestId` must come from the HelpDesk call/ticket number, not Work Order Number.
-  - Use HelpDesk `Created` for `orderStartDatetime`; current implementation also uses it as the best available demand/usage date for `partsUsedDateTime`.
-  - Use HelpDesk `Serial Nr` for both `serialNumber` and `deviceSerialNumber`.
-  - Leave `resolvedDateTime`, `relCompanyId`, and `assignedPersonCode` blank unless a confirmed source is provided.
-  - Keep Stock Audit Report DN rows as usage/stock-movement evidence, but do not pretend every DN can be joined to a HelpDesk ticket because delivery note numbers are not stored in HelpDesk.
+  - Delivery Notes / SAP stock movement are the source of truth for actual parts usage because requested HelpDesk parts often differ from dispatched/used alternatives, and HelpDesk tickets do not always exist.
+  - Use Stock Audit Report DN rows for actual `partCode`, `quantityUsed`, `Warehouse`, and `partsUsedDateTime`.
+  - Use `masters.csv` as the primary source for `Master` on the actual used part.
+  - Do not use Work Order Number for `orderNumber` or `requestId`. If those fields are later enriched, use HelpDesk call/ticket number only when there is strict evidence linking the DN/SAP usage row to the ticket.
+  - Leave HelpDesk-only fields such as customer, serial, and order start blank unless a strict DN-to-ticket/SAP-service link is proven.
 - `PurchaseOrders.csv`:
   - Use live SAP PO lines and receipts.
   - HelpDesk export is reconciliation/enrichment evidence, not a replacement source.
