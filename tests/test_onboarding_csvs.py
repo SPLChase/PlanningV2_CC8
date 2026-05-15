@@ -9,6 +9,7 @@ import pandas as pd
 from planning_v2.onboarding_csvs import (
     build_template_parts,
     build_template_parts_usage,
+    build_template_parts_usage_from_issue_tracker,
     build_template_purchase_orders,
     build_template_warehouses,
     build_template_stock_on_hand,
@@ -186,6 +187,69 @@ class OnboardingCsvTests(unittest.TestCase):
         out = build_template_parts_usage(usage, ["orderNumber", "partCode", "Master"], masters)
 
         self.assertEqual(out.loc[0, "Master"], "SPL1")
+
+    def test_template_parts_usage_from_issue_tracker_uses_call_and_serial_fields(self) -> None:
+        tracker = pd.DataFrame(
+            {
+                "Call Number": ["71919593"],
+                "Created": ["2026/01/20"],
+                "Status": ["Open"],
+                "Customer": ["WCED"],
+                "CustomerNormalized": [""],
+                "Part Nr": ["38064536"],
+                "DispatchPartNo": ["38066709"],
+                "Quantity": ["1"],
+                "Serial Nr": ["EWAA007343"],
+                "DispatchWarehouse": ["FUJ CT"],
+                "SPLMaster": [""],
+            }
+        )
+        masters = pd.DataFrame({"SPL Master": ["SPL1"], "Items linked": ["38066709;38064536"]})
+
+        out = build_template_parts_usage_from_issue_tracker(
+            tracker,
+            [
+                "orderNumber",
+                "requestId",
+                "customerCompanyCode",
+                "orderStartDatetime",
+                "orderStatus",
+                "partCode",
+                "serialNumber",
+                "quantityUsed",
+                "partsUsedDateTime",
+                "Warehouse",
+                "deviceSerialNumber",
+                "Master",
+            ],
+            masters,
+        )
+
+        self.assertEqual(out.loc[0, "orderNumber"], "71919593")
+        self.assertEqual(out.loc[0, "requestId"], "71919593")
+        self.assertEqual(out.loc[0, "customerCompanyCode"], "WCED")
+        self.assertEqual(out.loc[0, "partCode"], "38066709")
+        self.assertEqual(out.loc[0, "serialNumber"], "EWAA007343")
+        self.assertEqual(out.loc[0, "deviceSerialNumber"], "EWAA007343")
+        self.assertEqual(out.loc[0, "Master"], "SPL1")
+
+    def test_template_parts_usage_from_issue_tracker_requires_call_number(self) -> None:
+        tracker = pd.DataFrame(
+            {
+                "Call Number": ["", "71919593"],
+                "Created": ["2026/01/20", "2026/01/20"],
+                "Status": ["Open", "Open"],
+                "Customer": ["WCED", "WCED"],
+                "Part Nr": ["99999999", "38064536"],
+                "DispatchPartNo": ["", ""],
+                "Quantity": ["1", "1"],
+            }
+        )
+
+        out = build_template_parts_usage_from_issue_tracker(tracker, ["orderNumber", "partCode"])
+
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out.loc[0, "orderNumber"], "71919593")
 
     def test_template_purchase_orders_maps_sap_po_lines_and_receipts(self) -> None:
         source = pd.DataFrame(

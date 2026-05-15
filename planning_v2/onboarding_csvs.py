@@ -52,12 +52,18 @@ POPULATED_TEMPLATE_FIELDS = {
     },
     "Customers": {},
     "PartsUsage": {
-        "orderNumber": "Stock Audit Report 3Y:Document for DN rows",
-        "partCode": "Stock Audit Report 3Y:Item No.",
-        "Warehouse": "Stock Audit Report 3Y:Whse",
-        "quantityUsed": "Stock Audit Report 3Y:absolute Quantity for negative DN rows",
-        "partsUsedDateTime": "Stock Audit Report 3Y:Posting Date",
-        "Master": "Reference masters.csv:SPL Master by used part",
+        "orderNumber": "CoCre8 HelpDesk issue tracker:Call Number",
+        "requestId": "CoCre8 HelpDesk issue tracker:Call Number",
+        "customerCompanyCode": "CoCre8 HelpDesk issue tracker:CustomerNormalized/Customer",
+        "orderStartDatetime": "CoCre8 HelpDesk issue tracker:Created",
+        "orderStatus": "CoCre8 HelpDesk issue tracker:Status",
+        "partCode": "CoCre8 HelpDesk issue tracker:DispatchPartNo when present, otherwise Part Nr",
+        "serialNumber": "CoCre8 HelpDesk issue tracker:Serial Nr",
+        "quantityUsed": "CoCre8 HelpDesk issue tracker:Quantity",
+        "partsUsedDateTime": "CoCre8 HelpDesk issue tracker:Created used as demand/usage date",
+        "Warehouse": "CoCre8 HelpDesk issue tracker:DispatchWarehouse",
+        "deviceSerialNumber": "CoCre8 HelpDesk issue tracker:Serial Nr",
+        "Master": "CoCre8 HelpDesk issue tracker:SPLMaster or masters.csv by part",
     },
     "PurchaseOrders": {
         "purchaseOrderNumber": "SAP Service Layer SQLQueries:OPOR.DocNum",
@@ -202,7 +208,7 @@ def build_template_outputs(
         elif object_name == "Customers":
             outputs[object_name] = build_template_customers(customers, columns)
         elif object_name == "PartsUsage":
-            outputs[object_name] = build_template_parts_usage(usage, columns, masters)
+            outputs[object_name] = build_template_parts_usage(usage, columns, masters, issue_tracker)
         elif object_name == "PurchaseOrders":
             outputs[object_name] = build_template_purchase_orders(
                 purchase_orders if purchase_orders is not None else pd.DataFrame(),
@@ -321,6 +327,16 @@ def _sap_date(value: object) -> str:
     return parsed.strftime("%Y-%m-%d")
 
 
+def _parse_any_date(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    parsed = pd.to_datetime(text, errors="coerce")
+    if pd.isna(parsed):
+        return ""
+    return parsed.strftime("%Y-%m-%d")
+
+
 def _spi_main_alt_lookup(spi: pd.DataFrame) -> dict[str, str]:
     if spi.empty or "Main alternative par" not in spi.columns:
         return {}
@@ -386,7 +402,12 @@ def build_template_parts_usage(
     usage: pd.DataFrame,
     columns: list[str],
     masters: pd.DataFrame | None = None,
+    issue_tracker: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
+    if issue_tracker is not None and not issue_tracker.empty:
+        tracker_usage = build_template_parts_usage_from_issue_tracker(issue_tracker, columns, masters)
+        if not tracker_usage.empty:
+            return tracker_usage
     if usage.empty:
         return pd.DataFrame(columns=columns)
     work = usage.copy()
@@ -423,6 +444,60 @@ def build_template_parts_usage(
         if fallback.any():
             parsed.loc[fallback] = pd.to_datetime(dn.loc[fallback, "Posting Date"].astype(str).str.strip(), format="%d/%m/%Y", errors="coerce")
         out["partsUsedDateTime"] = parsed.dt.strftime("%Y-%m-%d").fillna("")
+    return out.drop_duplicates(keep="first")
+
+
+def build_template_parts_usage_from_issue_tracker(
+    issue_tracker: pd.DataFrame,
+    columns: list[str],
+    masters: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    if issue_tracker.empty:
+        return pd.DataFrame(columns=columns)
+    source = issue_tracker.copy().reset_index(drop=True)
+    call_number = _col(source, "Call Number").astype(str).str.strip()
+    source = source[call_number.ne("")].copy().reset_index(drop=True)
+    if source.empty:
+        return pd.DataFrame(columns=columns)
+    part = _col(source, "DispatchPartNo").map(_part_key)
+    requested_part = _col(source, "Part Nr").map(_part_key)
+    part = part.where(part.astype(str).str.strip().ne(""), requested_part)
+    source = source[part.astype(str).str.strip().ne("")].copy().reset_index(drop=True)
+    part = part[part.astype(str).str.strip().ne("")].reset_index(drop=True)
+    if source.empty:
+        return pd.DataFrame(columns=columns)
+
+    out = _blank_template(columns, len(source))
+    call_number = _col(source, "Call Number").astype(str).str.strip()
+    if "orderNumber" in out.columns:
+        out["orderNumber"] = call_number
+    if "requestId" in out.columns:
+        out["requestId"] = call_number
+    if "customerCompanyCode" in out.columns:
+        customer = _col(source, "CustomerNormalized").astype(str).str.strip()
+        fallback = _col(source, "Customer").astype(str).str.strip()
+        out["customerCompanyCode"] = customer.where(customer.ne(""), fallback)
+    if "orderStartDatetime" in out.columns:
+        out["orderStartDatetime"] = _col(source, "Created").map(_parse_any_date)
+    if "orderStatus" in out.columns:
+        out["orderStatus"] = _col(source, "Status")
+    if "partCode" in out.columns:
+        out["partCode"] = part
+    if "serialNumber" in out.columns:
+        out["serialNumber"] = _col(source, "Serial Nr")
+    if "quantityUsed" in out.columns:
+        out["quantityUsed"] = _to_number(_col(source, "Quantity"))
+    if "partsUsedDateTime" in out.columns:
+        out["partsUsedDateTime"] = _col(source, "Created").map(_parse_any_date)
+    if "Warehouse" in out.columns:
+        out["Warehouse"] = _col(source, "DispatchWarehouse")
+    if "deviceSerialNumber" in out.columns:
+        out["deviceSerialNumber"] = _col(source, "Serial Nr")
+    if "Master" in out.columns:
+        by_part = _master_lookup(masters)
+        mapped = part.map(by_part).fillna("")
+        tracker_master = _col(source, "SPLMaster").astype(str).str.strip()
+        out["Master"] = tracker_master.where(tracker_master.ne(""), mapped)
     return out.drop_duplicates(keep="first")
 
 
