@@ -134,7 +134,9 @@ def build_purchase_order_lines_sql() -> str:
     return """
 SELECT
     P0."DocEntry" AS "DocEntry",
-    P0."DocNum" AS "PurchaseOrderNumber",
+    P0."DocNum" AS "SapInternalPurchaseOrderNumber",
+    P0."NumAtCard" AS "PurchaseOrderNumber",
+    P0."Comments" AS "PurchaseOrderComments",
     P1."LineNum" AS "LineNum",
     P0."DocStatus" AS "DocStatus",
     P0."CANCELED" AS "Canceled",

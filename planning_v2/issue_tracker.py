@@ -272,7 +272,7 @@ def purchase_order_reconciliation(
                     "MSConvoID": clean_text(ticket.get("MSConvoID")),
                     "ReplenishStatus": clean_text(ticket.get("ReplenishStatus")),
                     "MatchStatus": "No matching SAP PO number",
-                    "Evidence": "HelpDesk PurchaseOrder filename stem does not match any SAP OPOR.DocNum returned by the live extract.",
+                    "Evidence": "HelpDesk PurchaseOrder filename stem does not match any SAP OPOR.NumAtCard returned by the live extract.",
                 }
             )
             continue
@@ -301,7 +301,7 @@ def purchase_order_reconciliation(
                     "MSConvoID": clean_text(ticket.get("MSConvoID")),
                     "ReplenishStatus": clean_text(ticket.get("ReplenishStatus")),
                     "MatchStatus": status,
-                    "Evidence": "SAP PO number equals HelpDesk PurchaseOrder filename stem; part/master checked separately.",
+                    "Evidence": "SAP OPOR.NumAtCard equals HelpDesk PurchaseOrder filename stem; part/master checked separately.",
                 }
             )
         if not matched_any_part and not candidates.empty:

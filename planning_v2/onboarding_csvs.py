@@ -65,7 +65,7 @@ POPULATED_TEMPLATE_FIELDS = {
         "Master": "Reference masters.csv:SPL Master by used part",
     },
     "PurchaseOrders": {
-        "purchaseOrderNumber": "SAP Service Layer SQLQueries:OPOR.DocNum",
+        "purchaseOrderNumber": "SAP Service Layer SQLQueries:OPOR.NumAtCard, falling back to OPOR.DocNum",
         "purchaseOrderStatus": "SAP Service Layer SQLQueries:OPOR.DocStatus/CANCELED mapped to template status",
         "creationDateTime": "SAP Service Layer SQLQueries:OPOR.CreateDate",
         "approvalDateTime": "SAP Service Layer SQLQueries:OPOR.DocDate",
@@ -701,6 +701,7 @@ def build_purchase_order_evidence(
 ) -> pd.DataFrame:
     columns = [
         "PurchaseOrderNumber",
+        "SapInternalPurchaseOrderNumber",
         "actualPartNumber",
         "SPLMaster",
         "quantity",
@@ -722,6 +723,7 @@ def build_purchase_order_evidence(
     out = pd.DataFrame(
         {
             "PurchaseOrderNumber": _col(source, "PurchaseOrderNumber").map(_part_key),
+            "SapInternalPurchaseOrderNumber": _col(source, "SapInternalPurchaseOrderNumber").map(_part_key),
             "actualPartNumber": _col(source, "PartNumber").map(_part_key),
             "SPLMaster": _col(source, "PartNumber").map(_part_key).map(by_part).fillna(""),
             "quantity": _to_number(_col(source, "Quantity")),

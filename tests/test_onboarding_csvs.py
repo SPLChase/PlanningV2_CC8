@@ -325,6 +325,7 @@ class OnboardingCsvTests(unittest.TestCase):
         source = pd.DataFrame(
             {
                 "PurchaseOrderNumber": [50002190, 50002189, 50002188],
+                "SapInternalPurchaseOrderNumber": [2190, 2189, 2188],
                 "DocStatus": ["O", "C", "O"],
                 "Canceled": ["N", "N", "Y"],
                 "CreationDateTime": ["20260507", "20260506", "20260505"],
@@ -360,6 +361,41 @@ class OnboardingCsvTests(unittest.TestCase):
         self.assertEqual(out.loc[0, "partNumber"], "123")
         self.assertEqual(out.loc[1, "receivedDateTime"], "2026-05-07")
         self.assertEqual(out.loc[0, "demandStatus"], "")
+
+    def test_template_purchase_orders_uses_external_sap_po_number_for_matching(self) -> None:
+        source = pd.DataFrame(
+            {
+                "PurchaseOrderNumber": ["26PO000031"],
+                "SapInternalPurchaseOrderNumber": ["50002190"],
+                "DocStatus": ["O"],
+                "Canceled": ["N"],
+                "PartNumber": ["38047180"],
+                "Quantity": [1],
+                "QuantityReceived": [0],
+            }
+        )
+        issue_tracker = pd.DataFrame(
+            {
+                "PurchaseOrderKey": ["26PO000031"],
+                "Part Nr": ["38047180"],
+                "PartKey": ["38047180"],
+                "DispatchPartNo": [""],
+                "DispatchPartKey": [""],
+                "Call Number": ["71976661"],
+                "MSConvoID": ["thread-1"],
+                "ReplenishStatus": ["Ordered"],
+            }
+        )
+
+        out = build_template_purchase_orders(
+            source,
+            ["purchaseOrderNumber", "partNumber", "demandStatus"],
+            None,
+            issue_tracker,
+        )
+
+        self.assertEqual(out.loc[0, "purchaseOrderNumber"], "26PO000031")
+        self.assertEqual(out.loc[0, "demandStatus"], "Ordered")
 
     def test_template_purchase_orders_enriches_demand_status_with_strict_ticket_evidence(self) -> None:
         source = pd.DataFrame(

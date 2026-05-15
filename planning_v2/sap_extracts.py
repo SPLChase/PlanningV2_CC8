@@ -206,7 +206,9 @@ def fetch_live_purchase_orders(cfg: PlanningConfig) -> pd.DataFrame:
         return pd.DataFrame(
             columns=[
                 "DocEntry",
+                "SapInternalPurchaseOrderNumber",
                 "PurchaseOrderNumber",
+                "PurchaseOrderComments",
                 "LineNum",
                 "DocStatus",
                 "Canceled",
@@ -234,6 +236,8 @@ def fetch_live_purchase_orders(cfg: PlanningConfig) -> pd.DataFrame:
     merged = lines.merge(receipts, on=["DocEntry", "LineNum"], how="left")
     for column in [
         "PurchaseOrderNumber",
+        "SapInternalPurchaseOrderNumber",
+        "PurchaseOrderComments",
         "DocStatus",
         "Canceled",
         "CreationDateTime",
@@ -246,6 +250,10 @@ def fetch_live_purchase_orders(cfg: PlanningConfig) -> pd.DataFrame:
         if column not in merged.columns:
             merged[column] = ""
         merged[column] = merged[column].map(_clean_text)
+    merged["PurchaseOrderNumber"] = merged["PurchaseOrderNumber"].where(
+        merged["PurchaseOrderNumber"].astype(str).str.strip().ne(""),
+        merged["SapInternalPurchaseOrderNumber"],
+    )
     for column in ["Quantity", "LineCost", "QuantityReceived"]:
         if column not in merged.columns:
             merged[column] = 0

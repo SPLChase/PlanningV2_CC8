@@ -526,7 +526,7 @@ def template_field_rows(cfg: PlanningConfig) -> list[dict[str, str]]:
                     notes = STOCK_ON_HAND_TEMPLATE_NOTES[field.field_name]
                 elif field.output_object == "PurchaseOrders" and field.field_name == "demandStatus":
                     status = STATUS_REVIEW
-                    notes = "Conditional HelpDesk enrichment. Use ReplenishStatus only when PurchaseOrder filename stem matches SAP OPOR.DocNum and part/SPL Master evidence also matches; current export needs reconciliation."
+                    notes = "Conditional HelpDesk enrichment. Use ReplenishStatus only when PurchaseOrder filename stem matches SAP OPOR.NumAtCard and part/SPL Master evidence also matches."
                 else:
                     notes = "Left blank in generated template CSV until source and semantics are confirmed."
             rows.append(

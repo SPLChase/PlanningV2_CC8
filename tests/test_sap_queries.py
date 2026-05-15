@@ -59,7 +59,7 @@ class SapQueryTests(unittest.TestCase):
     def test_purchase_order_queries_use_po_and_grpo_tables(self) -> None:
         line_sql = build_purchase_order_lines_sql()
         receipt_sql = build_purchase_order_receipts_sql()
-        for token in ["OPOR", "POR1", '"DocNum"', '"CardCode"', '"LineTotal"']:
+        for token in ["OPOR", "POR1", '"DocNum"', '"NumAtCard"', '"CardCode"', '"LineTotal"']:
             self.assertIn(token, line_sql)
         for token in ["OPDN", "PDN1", '"BaseType" = 22', "SUM", "MAX"]:
             self.assertIn(token, receipt_sql)
