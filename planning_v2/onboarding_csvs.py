@@ -66,7 +66,7 @@ POPULATED_TEMPLATE_FIELDS = {
         "Master": "Reference masters.csv:SPL Master by used part",
     },
     "PurchaseOrders": {
-        "purchaseOrderNumber": "SAP Service Layer SQLQueries:OPOR.NumAtCard, falling back to OPOR.DocNum",
+        "purchaseOrderNumber": "SAP Service Layer SQLQueries:OPOR.NumAtCard, falling back only to PO-like reference parsed from OPOR.Comments",
         "purchaseOrderStatus": "SAP Service Layer SQLQueries:OPOR.DocStatus/CANCELED mapped to template status",
         "creationDateTime": "SAP Service Layer SQLQueries:OPOR.CreateDate",
         "approvalDateTime": "SAP Service Layer SQLQueries:OPOR.DocDate",
@@ -101,6 +101,10 @@ OUT_OF_SCOPE_TEMPLATE_FIELDS = {
     ("Warehouses", "isBootStockable"),
     ("WarehouseStockOnHand", "inventoryType"),
     ("WarehouseStockOnHand", "quantityOutbound"),
+}
+
+ROW_REQUIRED_TEMPLATE_FIELDS = {
+    "PurchaseOrders": ["purchaseOrderNumber", "lineCost"],
 }
 
 
@@ -1018,15 +1022,33 @@ def validate_template_outputs(
         elif len(df) == 0:
             status = "PENDING"
             notes = "Header-only template; no confirmed CoCre8 source yet."
-        elif len(populated_fields) == len(scoped_columns):
-            status = "PASS"
-            notes = "All in-scope template fields populated."
         else:
+            row_required_blanks = []
+            for column in ROW_REQUIRED_TEMPLATE_FIELDS.get(object_name, []):
+                if column in df.columns:
+                    blank_count = int(df[column].astype(str).str.strip().eq("").sum())
+                    if blank_count:
+                        row_required_blanks.append(f"{column} blank on {blank_count} rows")
+            if len(populated_fields) == len(scoped_columns) and not row_required_blanks:
+                status = "PASS"
+                notes = "All in-scope template fields populated."
+                rows.append(
+                    {
+                        "Object": object_name,
+                        "Path": str(csv_dir / f"{object_name}.csv"),
+                        "Rows": len(df),
+                        "Status": status,
+                        "Notes": notes,
+                    }
+                )
+                continue
             status = "PARTIAL"
             blank_fields = [column for column in scoped_columns if column not in populated_fields]
             notes = "Populated: " + ", ".join(populated_fields)
             if blank_fields:
                 notes += " | Needs source confirmation: " + ", ".join(blank_fields)
+            if row_required_blanks:
+                notes += " | Row-level gaps: " + "; ".join(row_required_blanks)
         rows.append(
             {
                 "Object": object_name,

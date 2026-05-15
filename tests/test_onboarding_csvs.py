@@ -397,6 +397,19 @@ class OnboardingCsvTests(unittest.TestCase):
         self.assertEqual(out.loc[0, "purchaseOrderNumber"], "26PO000031")
         self.assertEqual(out.loc[0, "demandStatus"], "Ordered")
 
+    def test_template_purchase_orders_does_not_fallback_to_internal_sap_number(self) -> None:
+        source = pd.DataFrame(
+            {
+                "PurchaseOrderNumber": [""],
+                "SapInternalPurchaseOrderNumber": ["50002190"],
+                "PartNumber": ["38047180"],
+            }
+        )
+
+        out = build_template_purchase_orders(source, ["purchaseOrderNumber", "partNumber"])
+
+        self.assertEqual(out.loc[0, "purchaseOrderNumber"], "")
+
     def test_template_purchase_orders_uses_spi_cocre8_cost_for_line_cost(self) -> None:
         source = pd.DataFrame(
             {

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import date, timedelta
 
 import pandas as pd
@@ -29,6 +30,14 @@ def _clean_text(value: object) -> str:
 
 def _to_number(series: pd.Series) -> pd.Series:
     return pd.to_numeric(series.astype(str).str.replace(",", "", regex=False), errors="coerce").fillna(0.0)
+
+
+def _external_po_reference(reference: object, comments: object) -> str:
+    text = _clean_text(reference)
+    if text:
+        return text
+    match = re.search(r"\b\d{2}PO\d{6}\b", _clean_text(comments), flags=re.IGNORECASE)
+    return match.group(0).upper() if match else ""
 
 
 def _lookup_frame(rows: list[dict], code_column: str, name_column: str) -> pd.DataFrame:
@@ -250,9 +259,9 @@ def fetch_live_purchase_orders(cfg: PlanningConfig) -> pd.DataFrame:
         if column not in merged.columns:
             merged[column] = ""
         merged[column] = merged[column].map(_clean_text)
-    merged["PurchaseOrderNumber"] = merged["PurchaseOrderNumber"].where(
-        merged["PurchaseOrderNumber"].astype(str).str.strip().ne(""),
-        merged["SapInternalPurchaseOrderNumber"],
+    merged["PurchaseOrderNumber"] = merged.apply(
+        lambda row: _external_po_reference(row.get("PurchaseOrderNumber"), row.get("PurchaseOrderComments")),
+        axis=1,
     )
     for column in ["Quantity", "LineCost", "QuantityReceived"]:
         if column not in merged.columns:
