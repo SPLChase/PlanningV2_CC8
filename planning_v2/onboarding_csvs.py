@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import re
 import zlib
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
@@ -73,7 +74,7 @@ POPULATED_TEMPLATE_FIELDS = {
         "vendorId": "SAP Service Layer SQLQueries:OPOR.CardCode",
         "partNumber": "SAP Service Layer SQLQueries:POR1.ItemCode",
         "quantity": "SAP Service Layer SQLQueries:POR1.Quantity",
-        "lineCost": "SPI_DATA.csv:ListPrice multiplied by 0.72 CoCre8 cost factor",
+        "lineCost": "Current SPI_DATA.csv then Reference/SPI_Historical newest-first:ListPrice multiplied by 0.72 CoCre8 cost factor",
         "quantityReceived": "SAP Service Layer SQLQueries:PDN1.Quantity summed by PO line",
         "receivedDateTime": "SAP Service Layer SQLQueries:OPDN.DocDate max by PO line",
     },
@@ -154,6 +155,7 @@ def generate_onboarding_csvs(cfg: PlanningConfig, out_dir: Path) -> list[Path]:
     customers = pd.DataFrame()
     masters = _read_masters(cfg.reference_dir / "masters.csv")
     spi = _read_spi(cfg.exco_source_dir / "SPI_DATA.csv")
+    spi_cost_history = _read_spi_cost_history(cfg.reference_dir / "SPI_Historical")
     issue_tracker = read_issue_tracker(cfg.issue_tracker_csv)
     manual_warehouses = read_manual_warehouse_fill(cfg)
 
@@ -172,6 +174,7 @@ def generate_onboarding_csvs(cfg: PlanningConfig, out_dir: Path) -> list[Path]:
         purchase_orders,
         issue_tracker,
         manual_warehouses,
+        spi_cost_history,
     )
 
     for object_name, df in outputs.items():
@@ -196,6 +199,7 @@ def build_template_outputs(
     purchase_orders: pd.DataFrame | None = None,
     issue_tracker: pd.DataFrame | None = None,
     manual_warehouses: pd.DataFrame | None = None,
+    spi_cost_history: pd.DataFrame | None = None,
 ) -> dict[str, pd.DataFrame]:
     outputs: dict[str, pd.DataFrame] = {}
     for object_name, columns in templates.items():
@@ -215,7 +219,7 @@ def build_template_outputs(
                 columns,
                 masters,
                 issue_tracker,
-                spi,
+                _combine_spi_cost_sources(spi, spi_cost_history if spi_cost_history is not None else pd.DataFrame()),
             )
         else:
             outputs[object_name] = pd.DataFrame(columns=columns)
@@ -230,6 +234,86 @@ def _read_spi(path: Path) -> pd.DataFrame:
     if not path.exists():
         return pd.DataFrame()
     return pd.read_csv(path, sep=";", dtype=str, encoding="utf-8-sig").fillna("")
+
+
+def _combine_spi_cost_sources(current_spi: pd.DataFrame, historical_spi: pd.DataFrame) -> pd.DataFrame:
+    frames = [frame for frame in [current_spi, historical_spi] if frame is not None and not frame.empty]
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True, sort=False).fillna("")
+
+
+def _read_spi_cost_history(history_dir: Path) -> pd.DataFrame:
+    if not history_dir.exists():
+        return pd.DataFrame(columns=["Material", "PartNumber", "ListPrice", "SourceDate", "SourceFile"])
+
+    frames: list[pd.DataFrame] = []
+    for path in sorted(history_dir.glob("*"), key=_spi_history_sort_key, reverse=True):
+        if path.suffix.lower() == ".csv":
+            frame = _read_spi_cost_csv(path)
+        elif path.suffix.lower() in {".xlsx", ".xlsm"}:
+            frame = _read_spi_cost_workbook(path)
+        else:
+            continue
+        if frame.empty:
+            continue
+        source_date = _spi_history_date(path)
+        frame["SourceDate"] = source_date.isoformat() if source_date else ""
+        frame["SourceFile"] = path.name
+        frames.append(frame)
+    if not frames:
+        return pd.DataFrame(columns=["Material", "PartNumber", "ListPrice", "SourceDate", "SourceFile"])
+    return pd.concat(frames, ignore_index=True, sort=False).fillna("")
+
+
+def _read_spi_cost_csv(path: Path) -> pd.DataFrame:
+    try:
+        frame = pd.read_csv(path, sep=";", dtype=str, encoding="utf-8-sig").fillna("")
+    except UnicodeDecodeError:
+        frame = pd.read_csv(path, sep=";", dtype=str, encoding="cp1252").fillna("")
+    return _normalise_spi_cost_columns(frame)
+
+
+def _read_spi_cost_workbook(path: Path) -> pd.DataFrame:
+    try:
+        frame = pd.read_excel(path, sheet_name="Spareparts", dtype=str).fillna("")
+    except ValueError:
+        return pd.DataFrame(columns=["Material", "PartNumber", "ListPrice"])
+    return _normalise_spi_cost_columns(frame)
+
+
+def _normalise_spi_cost_columns(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame.empty:
+        return pd.DataFrame(columns=["Material", "PartNumber", "ListPrice"])
+    aliases = {
+        "Material": ["Material", "Material number"],
+        "PartNumber": ["PartNumber", "Part number"],
+        "ListPrice": ["ListPrice", "List price"],
+    }
+    out = pd.DataFrame(index=frame.index)
+    for output, candidates in aliases.items():
+        source = next((column for column in candidates if column in frame.columns), None)
+        out[output] = frame[source] if source else ""
+    return out[["Material", "PartNumber", "ListPrice"]].fillna("")
+
+
+def _spi_history_date(path: Path) -> date | None:
+    name = path.stem
+    numeric = re.search(r"(20\d{6})", name)
+    if numeric:
+        parsed = pd.to_datetime(numeric.group(1), format="%Y%m%d", errors="coerce")
+        if not pd.isna(parsed):
+            return parsed.date()
+    month = re.search(r"_(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)(\d{2})$", name, flags=re.IGNORECASE)
+    if month:
+        parsed = pd.to_datetime(f"01 {month.group(1)} 20{month.group(2)}", format="%d %b %Y", errors="coerce")
+        if not pd.isna(parsed):
+            return parsed.date()
+    return None
+
+
+def _spi_history_sort_key(path: Path) -> tuple[date, str]:
+    return (_spi_history_date(path) or date.min, path.name)
 
 
 def _read_masters(path: Path) -> pd.DataFrame:

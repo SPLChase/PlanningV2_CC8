@@ -400,22 +400,23 @@ class OnboardingCsvTests(unittest.TestCase):
     def test_template_purchase_orders_uses_spi_cocre8_cost_for_line_cost(self) -> None:
         source = pd.DataFrame(
             {
-                "PurchaseOrderNumber": ["26PO000031"],
-                "PartNumber": ["38047180"],
-                "LineCost": [999999],
+                "PurchaseOrderNumber": ["26PO000031", "26PO000032"],
+                "PartNumber": ["38047180", "OLDPART"],
+                "LineCost": [999999, 888888],
             }
         )
         spi = pd.DataFrame(
             {
-                "Material": ["000000000038047180"],
-                "PartNumber": ["38047180"],
-                "ListPrice": ["100.00"],
+                "Material": ["000000000038047180", "", "OLDPART"],
+                "PartNumber": ["38047180", "OLDPART", "OLDPART"],
+                "ListPrice": ["100.00", "80.00", "70.00"],
             }
         )
 
         out = build_template_purchase_orders(source, ["purchaseOrderNumber", "partNumber", "lineCost"], spi=spi)
 
         self.assertEqual(out.loc[0, "lineCost"], 72.0)
+        self.assertEqual(out.loc[1, "lineCost"], 57.6)
 
     def test_template_purchase_orders_enriches_demand_status_with_strict_ticket_evidence(self) -> None:
         source = pd.DataFrame(

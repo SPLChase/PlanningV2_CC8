@@ -330,6 +330,7 @@ def source_evidence_rows(cfg: PlanningConfig) -> list[dict[str, str]]:
         ("MinStock3 SPL masters", cfg.minstock3_dir / "map_masters.py", "masters.csv maps linked items to SPLMaster/MasterKey."),
         ("SAP live warehouse lookup", "Service Layer Warehouses endpoint", "WarehouseCode and WarehouseName are fetched live for warehouses present in live stock rows."),
         ("MinStock3 SPI", cfg.minstock3_dir / "enrich_dimensions.py", "SPI_DATA supplies return/repair/list/credit pricing and derived CoCre8 cost."),
+        ("Historical SPI prices", cfg.reference_dir / "SPI_Historical", "Older SPI CSV/XLSX files backfill ListPrice where the current SPI file has deleted parts; current SPI is preferred, then historical files newest-first."),
         ("MinStock3 usage", cfg.minstock3_dir / "enrich_dimensions.py", "Stock audit DN rows aggregate annual usage."),
         ("Planning V2 live stock extract", "Service Layer SQLQueries on OITW/OITM", "Current stock metrics are fetched live from OITW: OnHand, IsCommited, OnOrder, MinStock, MaxStock, AvgPrice."),
         ("Manual stock audit report", cfg.exco_source_dir / "Stock Audit Report.txt", "Allowed manual SAP report source for usage once mapped to the template."),

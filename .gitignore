@@ -19,6 +19,8 @@ data/output/
 **/~$*.xlsx
 !Reference/
 !Reference/*.xlsx
+!Reference/SPI_Historical/
+!Reference/SPI_Historical/*.xlsx
 Reference/~$*.xlsx
 Reference/HelpdeskFlow.txt
 Reference/helpdesk_emails/
