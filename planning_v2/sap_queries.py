@@ -144,11 +144,14 @@ SELECT
     P0."DocDate" AS "ApprovalDateTime",
     P1."WhsCode" AS "ToWarehouseId",
     P0."CardCode" AS "VendorId",
+    C0."CardName" AS "VendorName",
+    C0."validFor" AS "VendorIsActive",
     P1."ItemCode" AS "PartNumber",
     P1."Quantity" AS "Quantity",
     P1."LineTotal" AS "LineCost"
 FROM OPOR P0
 INNER JOIN POR1 P1 ON P1."DocEntry" = P0."DocEntry"
+LEFT JOIN OCRD C0 ON C0."CardCode" = P0."CardCode"
 WHERE P1."ItemCode" IS NOT NULL
 ORDER BY
     P0."DocEntry" DESC, P1."LineNum"

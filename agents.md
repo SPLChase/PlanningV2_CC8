@@ -30,6 +30,7 @@ This repo is for onboarding CoCre8 data into the external Planning V2 Excel/CSV 
   - `Parts.csv`
   - `Warehouses.csv`
   - `WarehouseStockOnHand.csv`
+  - `Vendors.csv`
   - `PartsUsage.csv`
   - `PurchaseOrders.csv`
 - Generated customer/upload data belongs under `data/output/` and should remain ignored by git.
@@ -76,11 +77,16 @@ This repo is for onboarding CoCre8 data into the external Planning V2 Excel/CSV 
   - `SPLMaster` comes from `masters.csv`.
   - Product class/type/part type may come from SAP item group or related item master fields, but exact Planning V2 semantics are not confirmed.
 - `WarehouseStockOnHand.csv`:
+  - `partCode` maps to SAP `OITW.ItemCode`.
   - `quantityAllocated` maps to SAP `OITW.IsCommited`.
   - `quantityOnHand` maps to SAP `OITW.OnHand`.
   - `quantityInbound` maps to SAP `OITW.OnOrder`.
   - `inventoryType` and `quantityOutbound` are not needed for CoCre8 MVP unless the user reverses this.
   - `uniqueId` may be derived as a stable integer from a MinStock-style row key: `part|SPLMaster|warehouse`. MinStock3 `RowKey` itself is a string (`PartNo|MasterKey|Warehouse Code`), while the Planning V2 template expects an integer.
+- `Vendors.csv`:
+  - `vendorId` maps to SAP `OPOR.CardCode` for vendors present in PO history.
+  - `Description` maps to `OCRD.CardName`.
+  - `isActive` maps to `OCRD.validFor`, normalized to `Y`/`N`.
 - `Warehouses.csv`:
   - SAP supplies `warehouseId` and `warehouseDescription`.
   - Many remaining fields are manual/not applicable for CoCre8; provide a simple fill-in workbook when needed.

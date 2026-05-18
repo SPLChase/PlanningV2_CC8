@@ -86,6 +86,7 @@ Latest generated status from `data/output/validation_summary.csv`:
 | `WarehouseStockOnHand.csv` | 3454 | PASS | Live SAP stock metrics populated. |
 | `PurchaseOrders.csv` | 6006 | PASS | Complete with available data; remaining PO/cost gaps accepted by user. |
 | `PartCost.csv` | 1864 | PASS | SPI/historical SPI cost rules applied. |
+| `Vendors.csv` | generated from PO vendors | MAPPED | SAP PO vendor codes joined to business partner name/active flag. |
 | `Parts.csv` | 6061 | PARTIAL | Only business-rule fields remain unresolved. |
 | `PartsUsage.csv` | 879 | PARTIAL | Only `OrderType` remains in-scope unresolved. |
 | `ActionGroups.csv` | 0 | OUT_OF_SCOPE | All fields out of CoCre8 v1 scope. |
@@ -111,7 +112,7 @@ Source:
 - Live SAP `OITW/OITM`.
 
 Mappings:
-- `partNumber`: SAP item
+- `partCode`: SAP item
 - `warehouseCode`: SAP warehouse
 - `quantityAllocated`: `OITW.IsCommited`
 - `quantityOnHand`: `OITW.OnHand`
@@ -150,6 +151,21 @@ Accepted limitations:
 Evidence:
 - `data/output/review_evidence/PurchaseOrders_SPLMaster_Evidence.csv`
 - `data/output/review_evidence/PurchaseOrders_Ticket_Reconciliation.csv`
+
+### Vendors.csv
+
+Source:
+- Live SAP PO vendors from `OPOR.CardCode`.
+- Business partner lookup joined from `OCRD`.
+
+Mappings:
+- `vendorId`: `OPOR.CardCode`
+- `Description`: `OCRD.CardName`
+- `isActive`: `OCRD.validFor`, normalized to `Y`/`N`
+
+Notes:
+- This maps vendors actually present in the SAP PO extract, not every SAP vendor.
+- No local-only reference files are required.
 
 ### PartCost.csv
 
@@ -237,7 +253,6 @@ These are still header-only:
 
 - `Nodes.csv`: planning hierarchy not defined.
 - `Customers.csv`: customer/site master semantics unresolved.
-- `Vendors.csv`: SAP vendors likely available if needed, but not mapped.
 - `Addresses.csv`: address object/source not agreed.
 - `Employees.csv`: assigned person/action group not available for MVP.
 - `ServiceOrder.csv`: needs HelpDesk/service-call lifecycle mapping.

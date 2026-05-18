@@ -50,12 +50,17 @@ POPULATED_TEMPLATE_FIELDS = {
         "warehouseStatusId": "Manual fill workbook:isObsolete inverted to is_active flag (Y active, N obsolete)",
     },
     "WarehouseStockOnHand": {
-        "partNumber": "SAP Service Layer SQLQueries:OITW.ItemCode",
+        "partCode": "SAP Service Layer SQLQueries:OITW.ItemCode",
         "warehouseCode": "SAP Service Layer SQLQueries:OITW.WhsCode",
         "quantityAllocated": "SAP Service Layer SQLQueries:OITW.IsCommited",
         "quantityOnHand": "SAP Service Layer SQLQueries:OITW.OnHand",
         "quantityInbound": "SAP Service Layer SQLQueries:OITW.OnOrder",
         "uniqueId": "Derived stable integer from MinStock-style RowKey part|SPLMaster|warehouse",
+    },
+    "Vendors": {
+        "vendorId": "SAP Service Layer SQLQueries:OPOR.CardCode",
+        "Description": "SAP Service Layer SQLQueries:OCRD.CardName joined from PO vendor",
+        "isActive": "SAP Service Layer SQLQueries:OCRD.validFor joined from PO vendor",
     },
     "Customers": {},
     "PartsUsage": {
@@ -243,6 +248,11 @@ def build_template_outputs(
             outputs[object_name] = build_template_stock_on_hand(inventory, columns, masters)
         elif object_name == "Customers":
             outputs[object_name] = build_template_customers(customers, columns)
+        elif object_name == "Vendors":
+            outputs[object_name] = build_template_vendors(
+                purchase_orders if purchase_orders is not None else pd.DataFrame(),
+                columns,
+            )
         elif object_name == "PartsUsage":
             outputs[object_name] = build_template_parts_usage(usage, columns, masters, issue_tracker)
         elif object_name == "PurchaseOrders":
@@ -467,6 +477,17 @@ def _sap_date(value: object) -> str:
     if pd.isna(parsed):
         return ""
     return parsed.strftime("%Y-%m-%d")
+
+
+def _normalise_yn(value: object, default: str = "Y") -> str:
+    text = str(value or "").strip().lower()
+    if not text or text in {"nan", "none", "null", "<na>"}:
+        return default
+    if text in {"y", "yes", "true", "1", "tyes"}:
+        return "Y"
+    if text in {"n", "no", "false", "0", "tno"}:
+        return "N"
+    return default
 
 
 def _parse_any_date(value: object) -> str:
@@ -1275,6 +1296,24 @@ def build_template_stock_on_hand(
         out["uniqueId"] = row_keys.map(_stable_rowkey_int)
     subset = [col for col in ["partCode", "partNumber", "warehouseCode"] if col in out.columns]
     return out.drop_duplicates(subset=subset, keep="first") if subset else out
+
+
+def build_template_vendors(purchase_orders: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+    if purchase_orders.empty:
+        return pd.DataFrame(columns=columns)
+    source = purchase_orders[_col(purchase_orders, "VendorId").astype(str).str.strip().ne("")].copy()
+    if source.empty:
+        return pd.DataFrame(columns=columns)
+    out = _blank_template(columns, len(source))
+    if "vendorId" in out.columns:
+        out["vendorId"] = _col(source, "VendorId")
+    if "Description" in out.columns:
+        out["Description"] = _first_col(source, ["VendorName", "Description", "CardName"])
+    if "isActive" in out.columns:
+        out["isActive"] = _first_col(source, ["VendorIsActive", "isActive", "ValidFor"], default="Y").map(_normalise_yn)
+    if "vendorId" in out.columns:
+        return out.drop_duplicates(subset=["vendorId"], keep="first").reset_index(drop=True)
+    return out
 
 
 def build_template_customers(customers: pd.DataFrame, columns: list[str]) -> pd.DataFrame:

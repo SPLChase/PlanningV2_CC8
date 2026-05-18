@@ -225,6 +225,8 @@ def fetch_live_purchase_orders(cfg: PlanningConfig) -> pd.DataFrame:
                 "ApprovalDateTime",
                 "ToWarehouseId",
                 "VendorId",
+                "VendorName",
+                "VendorIsActive",
                 "PartNumber",
                 "Quantity",
                 "LineCost",
@@ -253,6 +255,8 @@ def fetch_live_purchase_orders(cfg: PlanningConfig) -> pd.DataFrame:
         "ApprovalDateTime",
         "ToWarehouseId",
         "VendorId",
+        "VendorName",
+        "VendorIsActive",
         "PartNumber",
         "ReceivedDateTime",
     ]:

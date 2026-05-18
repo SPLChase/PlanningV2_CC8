@@ -14,6 +14,7 @@ from planning_v2.onboarding_csvs import (
     build_template_purchase_orders,
     build_template_warehouses,
     build_template_stock_on_hand,
+    build_template_vendors,
     filter_active_warehouses,
     build_stock_detail,
     validate_outputs,
@@ -58,6 +59,26 @@ class OnboardingCsvTests(unittest.TestCase):
         self.assertEqual(stock.loc[0, "quantityOnHand"], 2)
         self.assertEqual(stock.loc[0, "inventoryType"], "")
         self.assertNotEqual(stock.loc[0, "uniqueId"], "")
+
+    def test_template_stock_on_hand_populates_canonical_part_code(self) -> None:
+        inventory = pd.DataFrame({"ItemNo": ["A1"], "WarehouseCode": ["WH1"], "OnHand": ["2"]})
+        stock = build_template_stock_on_hand(inventory, ["partCode", "warehouseCode", "quantityOnHand"])
+        self.assertEqual(stock.loc[0, "partCode"], "A1")
+        self.assertEqual(stock.loc[0, "warehouseCode"], "WH1")
+        self.assertEqual(stock.loc[0, "quantityOnHand"], 2)
+
+    def test_template_vendors_maps_po_vendor_lookup_fields(self) -> None:
+        purchase_orders = pd.DataFrame(
+            {
+                "VendorId": ["V001", "V001", "V002"],
+                "VendorName": ["Fujitsu", "Fujitsu Duplicate", "Inactive Vendor"],
+                "VendorIsActive": ["Y", "Y", "N"],
+            }
+        )
+        vendors = build_template_vendors(purchase_orders, ["vendorId", "Description", "isActive"])
+        self.assertEqual(list(vendors["vendorId"]), ["V001", "V002"])
+        self.assertEqual(vendors.loc[0, "Description"], "Fujitsu")
+        self.assertEqual(vendors.loc[1, "isActive"], "N")
 
     def test_warehouse_activity_helper_can_identify_inactive_without_deleting_fill_rows(self) -> None:
         inventory = pd.DataFrame(
