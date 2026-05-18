@@ -119,12 +119,12 @@ class OnboardingCsvTests(unittest.TestCase):
         self.assertEqual(out.loc[0, "warehouseStatusId"], "Y")
         self.assertEqual(out.loc[1, "warehouseStatusId"], "N")
 
-    def test_template_parts_leaves_unproven_primary_fields_blank(self) -> None:
+    def test_template_parts_defaults_missing_main_alternative_to_primary(self) -> None:
         parts = pd.DataFrame({"ItemNo": ["A1"], "SPLMaster": ["SPL1"], "ItemDescription": ["Part A"], "DisplayItemNo": ["A1"]})
         out = build_template_parts(parts, ["SPLMaster", "PartNumber", "isPrimary", "primaryPartNumber", "description"])
         self.assertEqual(out.loc[0, "SPLMaster"], "")
-        self.assertEqual(out.loc[0, "isPrimary"], "")
-        self.assertEqual(out.loc[0, "primaryPartNumber"], "")
+        self.assertEqual(out.loc[0, "isPrimary"], "True")
+        self.assertEqual(out.loc[0, "primaryPartNumber"], "A1")
 
     def test_template_parts_populates_spl_master_from_reference_masters(self) -> None:
         parts = pd.DataFrame({"ItemNo": ["34076947"], "ItemDescription": ["Part A"]})
@@ -151,6 +151,36 @@ class OnboardingCsvTests(unittest.TestCase):
         self.assertEqual(out.loc[0, "isPrimary"], "True")
         self.assertEqual(out.loc[1, "isPrimary"], "False")
         self.assertEqual(out.loc[1, "primaryPartNumber"], "34076947")
+
+    def test_template_parts_applies_confirmed_co_cre8_defaults(self) -> None:
+        parts = pd.DataFrame(
+            {
+                "ItemNo": ["A1", "B2"],
+                "ItemDescription": ["BBU pack", ""],
+                "DisplayDescription": ["", ""],
+            }
+        )
+
+        out = build_template_parts(
+            parts,
+            [
+                "PartNumber",
+                "description",
+                "isBootStockable",
+                "isBranchStockable",
+                "isObsolete",
+                "isExcludeFromReplenishment",
+                "purchaseLeadTimeDays",
+            ],
+        )
+
+        self.assertEqual(out.loc[0, "isBootStockable"], "N")
+        self.assertEqual(out.loc[0, "isBranchStockable"], "Y")
+        self.assertEqual(out.loc[0, "isObsolete"], "N")
+        self.assertEqual(out.loc[0, "isExcludeFromReplenishment"], "N")
+        self.assertEqual(out.loc[0, "purchaseLeadTimeDays"], 180)
+        self.assertEqual(out.loc[1, "description"], "null")
+        self.assertEqual(out.loc[1, "purchaseLeadTimeDays"], 3)
 
     def test_template_parts_usage_uses_negative_dn_rows_only(self) -> None:
         usage = pd.DataFrame(

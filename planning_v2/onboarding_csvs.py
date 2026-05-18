@@ -28,9 +28,14 @@ POPULATED_TEMPLATE_FIELDS = {
     "Parts": {
         "SPLMaster": "Reference masters.csv:SPL Master by linked item",
         "PartNumber": "SAP Service Layer SQLQueries:OITM.ItemCode",
-        "isPrimary": "SPI_DATA.csv:Main alternative par equals material/part number",
-        "primaryPartNumber": "SPI_DATA.csv:Main alternative par",
+        "isPrimary": "SPI_DATA.csv:Main alternative par equals material/part number; defaults true when no main alternative is listed",
+        "primaryPartNumber": "SPI_DATA.csv:Main alternative par; defaults to own part number when no main alternative is listed",
         "description": "SAP Service Layer SQLQueries:OITM.ItemName",
+        "isBootStockable": "Business rule: N for all CoCre8 stock",
+        "isBranchStockable": "Business rule: Y for all CoCre8 stock",
+        "isObsolete": "Business rule: N for all CoCre8 stock for now",
+        "isExcludeFromReplenishment": "Business rule: N for all CoCre8 stock for now",
+        "purchaseLeadTimeDays": "Business rule: default 3 days; 180 days when description contains BBU",
     },
     "Warehouses": {
         "warehouseId": "SAP Service Layer Warehouses:WarehouseCode",
@@ -631,17 +636,30 @@ def build_template_parts(
     if "PartNumber" in out.columns:
         out["PartNumber"] = _col(parts, "ItemNo")
     if "primaryPartNumber" in out.columns:
-        out["primaryPartNumber"] = main_alt.map(lambda value: _part_key(value) if str(value).strip().isdigit() else str(value).strip())
+        primary = main_alt.map(lambda value: _part_key(value) if str(value).strip().isdigit() else str(value).strip())
+        out["primaryPartNumber"] = primary.where(primary.astype(str).str.strip().ne(""), item_keys)
     if "isPrimary" in out.columns:
         main_alt_keys = main_alt.map(_part_key)
-        out["isPrimary"] = ""
+        out["isPrimary"] = "True"
         known = main_alt_keys.astype(str).str.strip().ne("")
         out.loc[known, "isPrimary"] = (main_alt_keys[known] == item_keys[known]).map({True: "True", False: "False"})
     if "description" in out.columns:
-        out["description"] = _col(parts, "ItemDescription").where(
+        description = _col(parts, "ItemDescription").where(
             _col(parts, "ItemDescription").astype(str).str.strip().ne(""),
             _col(parts, "DisplayDescription"),
         )
+        out["description"] = description.where(description.astype(str).str.strip().ne(""), "null")
+    if "isBootStockable" in out.columns:
+        out["isBootStockable"] = "N"
+    if "isBranchStockable" in out.columns:
+        out["isBranchStockable"] = "Y"
+    if "isObsolete" in out.columns:
+        out["isObsolete"] = "N"
+    if "isExcludeFromReplenishment" in out.columns:
+        out["isExcludeFromReplenishment"] = "N"
+    if "purchaseLeadTimeDays" in out.columns:
+        desc = out["description"].astype(str)
+        out["purchaseLeadTimeDays"] = desc.str.contains("BBU", case=False, na=False).map({True: 180, False: 3})
     return out.drop_duplicates(subset=[col for col in ["SPLMaster", "PartNumber"] if col in out.columns], keep="first")
 
 
