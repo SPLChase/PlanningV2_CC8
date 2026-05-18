@@ -90,6 +90,18 @@ POPULATED_TEMPLATE_FIELDS = {
         "quantityReceived": "SAP Service Layer SQLQueries:PDN1.Quantity summed by PO line",
         "receivedDateTime": "SAP Service Layer SQLQueries:OPDN.DocDate max by PO line",
     },
+    "InventoryTransfers": {
+        "inventoryTransferImoId": "Stock Audit Report.txt:Document + Item No. + absolute Quantity + pair sequence for IM rows",
+        "createdDateTime": "Stock Audit Report.txt:Posting Date for paired IM rows",
+        "completedDateTime": "Stock Audit Report.txt:Posting Date for paired IM rows",
+        "fromWarehouseId": "Stock Audit Report.txt:Whse on negative IM quantity row",
+        "toWarehouseId": "Stock Audit Report.txt:Whse on positive IM quantity row",
+        "demandStatus": "Business rule: Fulfilled for posted paired IM rows",
+        "orderStatusIsClosed": "Business rule: Y for posted paired IM rows",
+        "isResolved": "Business rule: Y for posted paired IM rows",
+        "partNumber": "Stock Audit Report.txt:forward-filled Item No. for IM rows",
+        "quantity": "Stock Audit Report.txt:absolute IM Quantity for paired rows",
+    },
     "PartCost": {
         "partCode": "Actual SAP/Fujitsu part id from live SAP parts and PO lines",
         "cost": "Current SPI_DATA.csv then Reference/SPI_Historical newest-first:ListPrice multiplied by 0.72, selected as of last PO month where possible",
@@ -117,6 +129,7 @@ OUT_OF_SCOPE_TEMPLATE_FIELDS = {
     ("PurchaseOrders", "customerId"),
     ("PurchaseOrders", "requestTicketDateTime"),
     ("PurchaseOrders", "isResolved"),
+    ("InventoryTransfers", "addressId"),
     ("Warehouses", "nodeId"),
     ("Warehouses", "isRepairWarehouse"),
     ("Warehouses", "isBootStockable"),
@@ -174,9 +187,10 @@ def generate_onboarding_csvs(cfg: PlanningConfig, out_dir: Path) -> list[Path]:
     parts, warehouses, inventory = fetch_live_template_sources(cfg)
     purchase_orders = fetch_live_purchase_orders(cfg)
     usage = fetch_live_delivery_note_usage(cfg)
+    stock_audit = _read_stock_audit(_stock_audit_3y_path(cfg))
     if usage.empty:
-        usage = _read_stock_audit(_stock_audit_3y_path(cfg))
-    stock_flow = pd.DataFrame()
+        usage = stock_audit
+    stock_flow = stock_audit
     customers = pd.DataFrame()
     masters = _read_masters(cfg.reference_dir / "masters.csv")
     spi = _read_spi(cfg.exco_source_dir / "SPI_DATA.csv")
@@ -272,6 +286,8 @@ def build_template_outputs(
                 columns,
                 combined_spi,
             )
+        elif object_name == "InventoryTransfers":
+            outputs[object_name] = build_template_inventory_transfers(stock_flow, columns)
         else:
             outputs[object_name] = pd.DataFrame(columns=columns)
     return outputs
@@ -391,6 +407,7 @@ def _read_masters(path: Path) -> pd.DataFrame:
 
 def _stock_audit_3y_path(cfg: PlanningConfig) -> Path:
     candidates = [
+        cfg.reference_dir / "Stock Audit Report.txt",
         cfg.exco_source_dir / "Stock Audit Report 3Y.txt",
         cfg.cc8_source_root / "Exco" / "April_refresh" / "Stock Audit Report 3Y.txt",
         cfg.exco_source_dir / "Stock Audit Report.txt",
@@ -497,6 +514,18 @@ def _parse_any_date(value: object) -> str:
     parsed = pd.to_datetime(text, errors="coerce")
     if pd.isna(parsed):
         return ""
+    return parsed.strftime("%Y-%m-%d")
+
+
+def _parse_stock_audit_date(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    parsed = pd.to_datetime(text, format="%d/%m/%y", errors="coerce")
+    if pd.isna(parsed):
+        parsed = pd.to_datetime(text, format="%d/%m/%Y", errors="coerce")
+    if pd.isna(parsed):
+        return _parse_any_date(text)
     return parsed.strftime("%Y-%m-%d")
 
 
@@ -1314,6 +1343,70 @@ def build_template_vendors(purchase_orders: pd.DataFrame, columns: list[str]) ->
     if "vendorId" in out.columns:
         return out.drop_duplicates(subset=["vendorId"], keep="first").reset_index(drop=True)
     return out
+
+
+def build_template_inventory_transfers(stock_audit: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+    if stock_audit.empty:
+        return pd.DataFrame(columns=columns)
+
+    source = stock_audit.copy()
+    source.columns = [str(column).strip() for column in source.columns]
+    required = {"Item No.", "Posting Date", "Document", "Whse", "Quantity"}
+    if not required.issubset(source.columns):
+        return pd.DataFrame(columns=columns)
+
+    for column in ["Item No.", "Description"]:
+        if column in source.columns:
+            source[column] = source[column].replace(r"^\s*$", pd.NA, regex=True).ffill().fillna("")
+
+    transfers = source[source["Document"].astype(str).str.startswith("IM ", na=False)].copy()
+    if transfers.empty:
+        return pd.DataFrame(columns=columns)
+    transfers["QuantityNum"] = _to_number(transfers["Quantity"])
+    transfers["AbsQty"] = transfers["QuantityNum"].abs()
+
+    rows: list[dict[str, object]] = []
+    group_columns = ["Document", "Item No.", "AbsQty"]
+    for (document, item_no, abs_qty), group in transfers.groupby(group_columns, dropna=False, sort=False):
+        negative = group[group["QuantityNum"] < 0].copy()
+        positive = group[group["QuantityNum"] > 0].copy()
+        if negative.empty or positive.empty or len(negative) != len(positive):
+            continue
+
+        negative = negative.sort_index().reset_index(drop=True)
+        positive = positive.sort_index().reset_index(drop=True)
+        for pair_index in range(len(negative)):
+            from_row = negative.iloc[pair_index]
+            to_row = positive.iloc[pair_index]
+            transfer_id = f"{document}|{item_no}|{abs_qty:g}"
+            if len(negative) > 1:
+                transfer_id = f"{transfer_id}|{pair_index + 1}"
+            posting_date = _parse_stock_audit_date(from_row.get("Posting Date") or to_row.get("Posting Date"))
+            rows.append(
+                {
+                    "inventoryTransferImoId": transfer_id,
+                    "createdDateTime": posting_date,
+                    "completedDateTime": posting_date,
+                    "fromWarehouseId": str(from_row.get("Whse", "")).strip(),
+                    "toWarehouseId": str(to_row.get("Whse", "")).strip(),
+                    "demandStatus": "Fulfilled",
+                    "orderStatusIsClosed": "Y",
+                    "movementType": "",
+                    "addressId": "",
+                    "isResolved": "Y",
+                    "partNumber": str(item_no).strip(),
+                    "quantity": abs_qty,
+                    "shipListCode": "",
+                }
+            )
+
+    if not rows:
+        return pd.DataFrame(columns=columns)
+    out = pd.DataFrame(rows)
+    for column in columns:
+        if column not in out.columns:
+            out[column] = ""
+    return out[columns].drop_duplicates(subset=["inventoryTransferImoId"], keep="first").reset_index(drop=True)
 
 
 def build_template_customers(customers: pd.DataFrame, columns: list[str]) -> pd.DataFrame:

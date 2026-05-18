@@ -87,6 +87,7 @@ Latest generated status from `data/output/validation_summary.csv`:
 | `PurchaseOrders.csv` | 6006 | PASS | Complete with available data; remaining PO/cost gaps accepted by user. |
 | `PartCost.csv` | 1864 | PASS | SPI/historical SPI cost rules applied. |
 | `Vendors.csv` | generated from PO vendors | MAPPED | SAP PO vendor codes joined to business partner name/active flag. |
+| `InventoryTransfers.csv` | generated from stock audit IM rows | PARTIAL | Posted transfer pairs populated; `movementType` and `shipListCode` remain unresolved. |
 | `Parts.csv` | 6061 | PARTIAL | Only business-rule fields remain unresolved. |
 | `PartsUsage.csv` | 879 | PARTIAL | Only `OrderType` remains in-scope unresolved. |
 | `ActionGroups.csv` | 0 | OUT_OF_SCOPE | All fields out of CoCre8 v1 scope. |
@@ -166,6 +167,53 @@ Mappings:
 Notes:
 - This maps vendors actually present in the SAP PO extract, not every SAP vendor.
 - No local-only reference files are required.
+
+### InventoryTransfers.csv
+
+Source:
+- `Reference/Stock Audit Report.txt`.
+- Rows where `Document` starts with `IM `.
+
+Pairing logic:
+- Forward-fill `Item No.` from stock audit item header rows.
+- Group by `Document + Item No. + abs(Quantity)`.
+- Negative quantity row is `fromWarehouseId`.
+- Positive quantity row is `toWarehouseId`.
+- If a group has equal multiple negative and positive rows, pair by row order.
+- If a group is single-sided or imbalanced, skip it rather than guessing.
+
+Current parse result from the committed report:
+- 1,877 IM rows.
+- 856 generated transfer rows.
+- 840 clean one-to-one transfer rows.
+- 16 duplicate same-document/item/quantity rows paired by row order.
+- Single-sided or imbalanced groups are skipped.
+
+Mappings:
+- `inventoryTransferImoId`: `Document|Item No.|abs(quantity)`, with a sequence suffix for duplicate same-document/item/quantity pairs.
+- `createdDateTime`: `Posting Date`.
+- `completedDateTime`: `Posting Date`.
+- `fromWarehouseId`: negative IM row `Whse`.
+- `toWarehouseId`: positive IM row `Whse`.
+- `demandStatus`: `Fulfilled` for posted paired IM rows.
+- `orderStatusIsClosed`: `Y` for posted paired IM rows.
+- `isResolved`: `Y` for posted paired IM rows.
+- `partNumber`: stock audit `Item No.`.
+- `quantity`: absolute IM quantity.
+
+Known CoCre8 transfer routing:
+- JHB main warehouse is `FUJITSU`.
+- Cape Town warehouse is `FUJ CT`.
+- JHB to CPT is posted as two legs: `FUJITSU -> FRANCOIS`, then `FRANCOIS -> FUJ CT`.
+- CPT to JHB is posted as two legs: `FUJ CT -> MATTHEW`, then `MATTHEW -> FUJITSU`.
+- Do not collapse those legs unless the Planning V2 importer explicitly wants logical end-to-end transfers instead of posted movements.
+
+Remaining unresolved:
+- `movementType`: no definition found in the reference files; mark for investigation.
+- `shipListCode`: not present in the stock audit report.
+
+MVP exclusion:
+- `addressId`: likely an internal/stored address id; exclude until a Service Layer source is obvious.
 
 ### PartCost.csv
 
@@ -258,7 +306,6 @@ These are still header-only:
 - `ServiceOrder.csv`: needs HelpDesk/service-call lifecycle mapping.
 - `RepairOrder.csv`: returns/faulty/repair lifecycle not reliably structured.
 - `Models.csv`: installed base/model source not confirmed.
-- `InventoryTransfers.csv`: SAP transfer source still needs mapping if MVP needs it.
 - `PartTypes.csv`: taxonomy not confirmed.
 - `Yields.csv`: no confirmed source.
 - `WarehouseExclusions.csv`: needs business rules.

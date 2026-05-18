@@ -31,6 +31,7 @@ This repo is for onboarding CoCre8 data into the external Planning V2 Excel/CSV 
   - `Warehouses.csv`
   - `WarehouseStockOnHand.csv`
   - `Vendors.csv`
+  - `InventoryTransfers.csv`
   - `PartsUsage.csv`
   - `PurchaseOrders.csv`
 - Generated customer/upload data belongs under `data/output/` and should remain ignored by git.
@@ -87,6 +88,16 @@ This repo is for onboarding CoCre8 data into the external Planning V2 Excel/CSV 
   - `vendorId` maps to SAP `OPOR.CardCode` for vendors present in PO history.
   - `Description` maps to `OCRD.CardName`.
   - `isActive` maps to `OCRD.validFor`, normalized to `Y`/`N`.
+- `InventoryTransfers.csv`:
+  - Source is committed `Reference/Stock Audit Report.txt`.
+  - Use `IM ` stock audit rows only.
+  - Pair rows by `Document + Item No. + abs(Quantity)`.
+  - Negative IM row gives `fromWarehouseId`; positive IM row gives `toWarehouseId`.
+  - `createdDateTime` and `completedDateTime` both use `Posting Date`.
+  - `demandStatus = Fulfilled`, `orderStatusIsClosed = Y`, and `isResolved = Y` for posted paired IM rows.
+  - Leave `movementType` blank; no definition was found in reference files.
+  - Exclude `addressId` for CoCre8 v1 unless a clear Service Layer address id source is found.
+  - JHB/CPT route uses virtual transit warehouses: `FUJITSU -> FRANCOIS -> FUJ CT`, and `FUJ CT -> MATTHEW -> FUJITSU`.
 - `Warehouses.csv`:
   - SAP supplies `warehouseId` and `warehouseDescription`.
   - Many remaining fields are manual/not applicable for CoCre8; provide a simple fill-in workbook when needed.

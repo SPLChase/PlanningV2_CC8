@@ -76,7 +76,7 @@ Generated CSVs and evidence files under `data/output/` are ignored by git. Templ
 - `Missing Important Fields`
 - `SAP Investigation Log`
 
-Current template-shaped CSVs with confirmed partial data are `Parts`, `Warehouses`, `WarehouseStockOnHand`, `Vendors`, `PartsUsage`, and `PurchaseOrders`. `PurchaseOrders.csv` remains SAP-sourced; HelpDesk PO filename stems are used only for reconciliation evidence. Review evidence files under `data/output/review_evidence/` preserve actual SAP/report part numbers, mapped `SPL Master`, and strict ticket/PO checks without committing customer data.
+Current template-shaped CSVs with confirmed partial data are `Parts`, `Warehouses`, `WarehouseStockOnHand`, `Vendors`, `InventoryTransfers`, `PartsUsage`, and `PurchaseOrders`. `PurchaseOrders.csv` remains SAP-sourced; HelpDesk PO filename stems are used only for reconciliation evidence. Review evidence files under `data/output/review_evidence/` preserve actual SAP/report part numbers, mapped `SPL Master`, and strict ticket/PO checks without committing customer data.
 
 HelpDesk flow observations and easy process improvements are documented in `docs/helpdesk-flow-recommendations.md`.
 

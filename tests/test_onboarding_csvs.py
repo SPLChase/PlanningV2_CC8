@@ -15,6 +15,7 @@ from planning_v2.onboarding_csvs import (
     build_template_warehouses,
     build_template_stock_on_hand,
     build_template_vendors,
+    build_template_inventory_transfers,
     filter_active_warehouses,
     build_stock_detail,
     validate_outputs,
@@ -79,6 +80,66 @@ class OnboardingCsvTests(unittest.TestCase):
         self.assertEqual(list(vendors["vendorId"]), ["V001", "V002"])
         self.assertEqual(vendors.loc[0, "Description"], "Fujitsu")
         self.assertEqual(vendors.loc[1, "isActive"], "N")
+
+    def test_template_inventory_transfers_pairs_stock_audit_im_rows(self) -> None:
+        stock_audit = pd.DataFrame(
+            {
+                "Item No.": ["A1", ""],
+                "Description": ["Part A", ""],
+                "Posting Date": ["31/07/23", "31/07/23"],
+                "Document": ["IM 50000431", "IM 50000431"],
+                "Whse": ["FUJH&M-J", "FUJH&M-C"],
+                "Quantity": ["-1.000", "1.000"],
+            }
+        )
+        transfers = build_template_inventory_transfers(
+            stock_audit,
+            [
+                "inventoryTransferImoId",
+                "createdDateTime",
+                "completedDateTime",
+                "fromWarehouseId",
+                "toWarehouseId",
+                "demandStatus",
+                "orderStatusIsClosed",
+                "movementType",
+                "addressId",
+                "isResolved",
+                "partNumber",
+                "quantity",
+                "shipListCode",
+            ],
+        )
+        self.assertEqual(len(transfers), 1)
+        self.assertEqual(transfers.loc[0, "inventoryTransferImoId"], "IM 50000431|A1|1")
+        self.assertEqual(transfers.loc[0, "createdDateTime"], "2023-07-31")
+        self.assertEqual(transfers.loc[0, "completedDateTime"], "2023-07-31")
+        self.assertEqual(transfers.loc[0, "fromWarehouseId"], "FUJH&M-J")
+        self.assertEqual(transfers.loc[0, "toWarehouseId"], "FUJH&M-C")
+        self.assertEqual(transfers.loc[0, "demandStatus"], "Fulfilled")
+        self.assertEqual(transfers.loc[0, "orderStatusIsClosed"], "Y")
+        self.assertEqual(transfers.loc[0, "movementType"], "")
+        self.assertEqual(transfers.loc[0, "addressId"], "")
+        self.assertEqual(transfers.loc[0, "isResolved"], "Y")
+        self.assertEqual(transfers.loc[0, "partNumber"], "A1")
+        self.assertEqual(transfers.loc[0, "quantity"], 1)
+
+    def test_template_inventory_transfers_pairs_duplicate_same_quantity_by_row_order(self) -> None:
+        stock_audit = pd.DataFrame(
+            {
+                "Item No.": ["A1", "", "", ""],
+                "Posting Date": ["20/10/23", "20/10/23", "20/10/23", "20/10/23"],
+                "Document": ["IM 50000464", "IM 50000464", "IM 50000464", "IM 50000464"],
+                "Whse": ["FUJITSU", "FUJH&M-C", "FUJITSU", "FUJH&M-J"],
+                "Quantity": ["-1.000", "1.000", "-1.000", "1.000"],
+            }
+        )
+        transfers = build_template_inventory_transfers(
+            stock_audit,
+            ["inventoryTransferImoId", "fromWarehouseId", "toWarehouseId", "partNumber", "quantity"],
+        )
+        self.assertEqual(list(transfers["inventoryTransferImoId"]), ["IM 50000464|A1|1|1", "IM 50000464|A1|1|2"])
+        self.assertEqual(list(transfers["toWarehouseId"]), ["FUJH&M-C", "FUJH&M-J"])
 
     def test_warehouse_activity_helper_can_identify_inactive_without_deleting_fill_rows(self) -> None:
         inventory = pd.DataFrame(
