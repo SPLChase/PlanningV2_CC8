@@ -331,6 +331,8 @@ class OnboardingCsvTests(unittest.TestCase):
                 "orderNumber",
                 "requestId",
                 "customerCompanyCode",
+                "orderStartDatetime",
+                "orderStatus",
                 "partCode",
                 "serialNumber",
                 "quantityUsed",
@@ -340,11 +342,14 @@ class OnboardingCsvTests(unittest.TestCase):
                 "Master",
             ],
             masters,
+            pd.DataFrame({"Call Number": ["67548724"], "Created": ["2025/10/15"], "Status": ["Closed"]}),
         )
 
         self.assertEqual(out.loc[0, "orderNumber"], "67548724")
         self.assertEqual(out.loc[0, "requestId"], "67548724")
         self.assertEqual(out.loc[0, "customerCompanyCode"], "Massmart")
+        self.assertEqual(out.loc[0, "orderStartDatetime"], "2025-10-15")
+        self.assertEqual(out.loc[0, "orderStatus"], "Closed")
         self.assertEqual(out.loc[0, "partCode"], "38062982")
         self.assertEqual(out.loc[0, "serialNumber"], "YM6D008491")
         self.assertEqual(out.loc[0, "deviceSerialNumber"], "YM6D008491")

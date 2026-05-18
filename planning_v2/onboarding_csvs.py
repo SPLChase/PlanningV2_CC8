@@ -62,6 +62,8 @@ POPULATED_TEMPLATE_FIELDS = {
         "orderNumber": "SAP Service Layer SQLQueries:ODLN.NumAtCard or parsed Call Nr from ODLN.Comments",
         "requestId": "SAP Service Layer SQLQueries:ODLN.NumAtCard or parsed Call Nr from ODLN.Comments",
         "customerCompanyCode": "SAP Service Layer SQLQueries:parsed Customer from ODLN.Comments where present",
+        "orderStartDatetime": "HelpDesk issue tracker Created date by unambiguous call-number match",
+        "orderStatus": "HelpDesk issue tracker Status by unambiguous call-number match",
         "partCode": "SAP Service Layer SQLQueries:DLN1.ItemCode actual delivered part",
         "serialNumber": "SAP Service Layer SQLQueries:parsed Serial number from ODLN.Comments where present",
         "quantityUsed": "SAP Service Layer SQLQueries:DLN1.Quantity",
@@ -101,6 +103,9 @@ OUT_OF_SCOPE_TEMPLATE_FIELDS = {
     ("Employees", "actionGroupId"),
     ("InventoryTransfers", "loClass"),
     ("PartCost", "averageRepairCost"),
+    ("PartsUsage", "resolvedDateTime"),
+    ("PartsUsage", "relCompanyId"),
+    ("PartsUsage", "assignedPersonCode"),
     ("Parts", "isService"),
     ("Parts", "isTool"),
     ("Parts", "isSmallPart"),
@@ -115,7 +120,6 @@ OUT_OF_SCOPE_TEMPLATE_FIELDS = {
 }
 
 ROW_REQUIRED_TEMPLATE_FIELDS = {
-    "PurchaseOrders": ["purchaseOrderNumber", "lineCost"],
     "PartCost": ["partCode", "cost", "currencyCode", "averageCost"],
 }
 
@@ -497,6 +501,31 @@ def _call_number_from_delivery_note(row: pd.Series) -> str:
     return _parse_labeled_value(comments, r"Call\s*(?:Nr|No|Number)?")
 
 
+def _call_match_key(value: object) -> str:
+    text = str(value or "").strip().upper()
+    if not text:
+        return ""
+    tokens = re.findall(r"\d{6,}", text)
+    if len(tokens) == 1:
+        return tokens[0].lstrip("0") or "0"
+    return re.sub(r"\s+", " ", text)
+
+
+def _helpdesk_by_call(issue_tracker: pd.DataFrame | None) -> dict[str, dict[str, str]]:
+    if issue_tracker is None or issue_tracker.empty:
+        return {}
+    work = issue_tracker.copy()
+    for column in ["Call Number", "Created", "Status"]:
+        if column not in work.columns:
+            work[column] = ""
+    work["CallMatchKey"] = work["Call Number"].map(_call_match_key)
+    work = work[work["CallMatchKey"].astype(str).str.strip().ne("")]
+    if work.empty:
+        return {}
+    work = work.drop_duplicates(subset=["CallMatchKey"], keep="first")
+    return work.set_index("CallMatchKey")[["Created", "Status"]].to_dict("index")
+
+
 def _filtered_sap_delivery_note_rows(usage: pd.DataFrame) -> pd.DataFrame:
     work = usage.copy()
     for column in ["DeliveryNoteNumber", "DocDate", "CustomerRefNumber", "Comments", "ItemNo", "WarehouseCode", "Quantity"]:
@@ -672,7 +701,7 @@ def build_template_parts_usage(
     if usage.empty:
         return pd.DataFrame(columns=columns)
     if {"DeliveryNoteNumber", "ItemNo", "WarehouseCode"}.issubset(usage.columns):
-        return _build_template_parts_usage_from_sap_delivery_notes(usage, columns, masters)
+        return _build_template_parts_usage_from_sap_delivery_notes(usage, columns, masters, issue_tracker)
     return _build_template_parts_usage_from_stock_audit(usage, columns, masters)
 
 
@@ -680,6 +709,7 @@ def _build_template_parts_usage_from_sap_delivery_notes(
     usage: pd.DataFrame,
     columns: list[str],
     masters: pd.DataFrame | None = None,
+    issue_tracker: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     dn = _filtered_sap_delivery_note_rows(usage)
     if dn.empty:
@@ -692,6 +722,8 @@ def _build_template_parts_usage_from_sap_delivery_notes(
     comments = dn["Comments"]
     serial = comments.map(lambda value: _parse_labeled_value(value, r"Serial\s*(?:number|nr|no)?"))
     customer = comments.map(lambda value: _parse_labeled_value(value, r"Customer"))
+    helpdesk = _helpdesk_by_call(issue_tracker)
+    helpdesk_rows = order_number.map(lambda value: helpdesk.get(_call_match_key(value), {}))
 
     out = _blank_template(columns, len(dn))
     if "orderNumber" in out.columns:
@@ -700,6 +732,10 @@ def _build_template_parts_usage_from_sap_delivery_notes(
         out["requestId"] = call_number
     if "customerCompanyCode" in out.columns:
         out["customerCompanyCode"] = customer
+    if "orderStartDatetime" in out.columns:
+        out["orderStartDatetime"] = helpdesk_rows.map(lambda row: _parse_any_date(row.get("Created", "")))
+    if "orderStatus" in out.columns:
+        out["orderStatus"] = helpdesk_rows.map(lambda row: str(row.get("Status", "") or "").strip())
     if "partCode" in out.columns:
         out["partCode"] = dn["ItemNo"].map(_part_key)
     if "serialNumber" in out.columns:
