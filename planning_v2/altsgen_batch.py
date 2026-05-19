@@ -16,6 +16,7 @@ from dotenv import dotenv_values
 
 from planning_v2.config import get_config
 from planning_v2.onboarding_csvs import build_template_part_types
+from planning_v2.onboarding_csvs import _part_type_lookup
 from planning_v2.template_specs import template_columns
 
 
@@ -257,6 +258,22 @@ def _write_evidence(path: Path, rows: list[dict[str, Any]]) -> pd.DataFrame:
     return frame
 
 
+def _refresh_parts_csv_part_types(parts_csv: Path, evidence: pd.DataFrame) -> int:
+    if not parts_csv.exists():
+        return 0
+    parts = pd.read_csv(parts_csv, dtype=str, encoding="utf-8-sig").fillna("")
+    if "PartNumber" not in parts.columns or "partType" not in parts.columns:
+        return 0
+    lookup = _part_type_lookup(evidence)
+    if not lookup:
+        return 0
+    mapped = parts["PartNumber"].map(_clean_text).map(lookup).fillna("")
+    changed = int((mapped.astype(str).str.strip().ne("")) & (parts["partType"].astype(str).str.strip() != mapped.astype(str).str.strip())).sum()
+    parts["partType"] = parts["partType"].where(mapped.astype(str).str.strip().eq(""), mapped)
+    parts.to_csv(parts_csv, index=False, encoding="utf-8-sig")
+    return changed
+
+
 def run_altsgen_part_type_batch(
     *,
     parts_csv: Path,
@@ -365,6 +382,7 @@ def run_altsgen_part_type_batch(
         _append_jsonl(raw_path, raw_records)
         raw_records = []
         evidence = _write_evidence(evidence_path, evidence_rows)
+        _refresh_parts_csv_part_types(parts_csv, evidence)
         evidence_rows = []
         if not complete:
             incomplete_batch_ids.append(batch_id)
@@ -378,6 +396,7 @@ def run_altsgen_part_type_batch(
     part_types_path = out_dir / "PartTypes.csv"
     part_types_path.parent.mkdir(parents=True, exist_ok=True)
     part_types.to_csv(part_types_path, index=False, encoding="utf-8-sig")
+    partsUpdated = _refresh_parts_csv_part_types(parts_csv, evidence)
 
     statuses = evidence["status"].value_counts(dropna=False).astype(int).to_dict() if "status" in evidence.columns else {}
     report = {
@@ -390,6 +409,7 @@ def run_altsgen_part_type_batch(
         "incompleteBatchIds": incomplete_batch_ids,
         "statusCountsAllEvidence": {str(key): int(value) for key, value in statuses.items()},
         "partTypeRows": int(len(part_types)),
+        "partsCsvPartTypesUpdated": int(partsUpdated),
         "partTypesCsv": str(part_types_path),
         "evidenceCsv": str(evidence_path),
         "batchAuditJsonl": str(audit_path),
