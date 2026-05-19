@@ -8,6 +8,7 @@ import pandas as pd
 
 from planning_v2.onboarding_csvs import (
     build_template_part_cost,
+    build_template_part_types,
     build_template_parts,
     build_template_parts_usage,
     build_template_parts_usage_from_issue_tracker,
@@ -620,6 +621,24 @@ class OnboardingCsvTests(unittest.TestCase):
         self.assertEqual(a1["currencyCode"], "EUR")
         self.assertEqual(a1["averageRepairCost"], "")
         self.assertEqual(b2["cost"], 36.0)
+
+    def test_template_part_types_uses_altsgen_commodity_lookup(self) -> None:
+        evidence = pd.DataFrame(
+            {
+                "PartNumber": ["A1", "B2", "C3", "D4"],
+                "status": ["ok", "ok", "error", "ok"],
+                "partType": ["hdd_sas_2_5_sff", "hdd_sas_2_5_sff", "laptop_battery", "unknown"],
+                "partTypeDescription": ["SAS 2.5 inch hard disk drive", "Duplicate", "Battery", "Unknown"],
+                "isReworkable": ["", "", "", ""],
+            }
+        )
+
+        out = build_template_part_types(evidence, ["partType", "partTypeDescription", "isReworkable"])
+
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out.loc[0, "partType"], "hdd_sas_2_5_sff")
+        self.assertEqual(out.loc[0, "partTypeDescription"], "Duplicate")
+        self.assertEqual(out.loc[0, "isReworkable"], "")
 
     def test_validation_flags_missing_confirmed_csv_columns(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

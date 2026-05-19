@@ -77,6 +77,15 @@ This repo is for onboarding CoCre8 data into the external Planning V2 Excel/CSV 
   - `isPrimary` comes from `SPI_DATA.csv`: if `Main alternative par` equals the part number, `isPrimary = True`; otherwise false when known.
   - `SPLMaster` comes from `masters.csv`.
   - Product class/type/part type may come from SAP item group or related item master fields, but exact Planning V2 semantics are not confirmed.
+- `PartTypes.csv`:
+  - Source is the hosted Altsgen batch API, following the Obsoletes project API pattern.
+  - Do not use/import the local `C:\dev\altsgen` repo for PlanningV2 part-type enrichment.
+  - Batch endpoint shape is `POST /api/v1/identify/batch` with up to 500 `{seed_pn, context}` parts, then `GET /api/v1/identify/batch/{batch_id}` to poll.
+  - `partType` maps to Altsgen `commodity_type`.
+  - `partTypeDescription` maps to API `spec_summary.description` when present, otherwise a human-readable commodity type label.
+  - `isReworkable` is not supplied by Altsgen; leave blank until business rules are confirmed.
+  - CLI: `.\.venv\Scripts\python.exe -m planning_v2.altsgen_batch --limit 500 --batch-size 500`.
+  - Evidence is written under ignored `data/output/review_evidence/Altsgen_*`.
 - `WarehouseStockOnHand.csv`:
   - `partCode` maps to SAP `OITW.ItemCode`.
   - `quantityAllocated` maps to SAP `OITW.IsCommited`.

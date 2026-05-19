@@ -109,6 +109,10 @@ POPULATED_TEMPLATE_FIELDS = {
         "currencyCode": "Business rule: EUR for SPI CoCre8 costs",
         "averageCost": "PO quantity-weighted average of SPI-derived CoCre8 costs across SAP PO history",
     },
+    "PartTypes": {
+        "partType": "Hosted Altsgen batch API:commodity_type for CoCre8 parts",
+        "partTypeDescription": "Hosted Altsgen batch API:spec_summary.description or humanized commodity_type",
+    },
 }
 
 OUT_OF_SCOPE_TEMPLATE_FIELDS = {
@@ -159,6 +163,13 @@ def _to_number(series: pd.Series) -> pd.Series:
     return pd.to_numeric(series.astype(str).str.replace(",", "", regex=False), errors="coerce").fillna(0.0)
 
 
+def _clean_text(value: object) -> str:
+    if value is None:
+        return ""
+    text = str(value).strip()
+    return "" if text.lower() in {"nan", "none", "nat", "null", "<na>"} else text
+
+
 def _col(df: pd.DataFrame, name: str, default: object = "") -> pd.Series:
     if name in df.columns:
         return df[name]
@@ -199,6 +210,7 @@ def generate_onboarding_csvs(cfg: PlanningConfig, out_dir: Path) -> list[Path]:
     combined_spi_costs = _combine_spi_cost_sources(spi, spi_cost_history)
     issue_tracker = read_issue_tracker(cfg.issue_tracker_csv)
     manual_warehouses = read_manual_warehouse_fill(cfg)
+    altsgen_part_type_evidence = _read_csv(out_dir.parent / "review_evidence" / "Altsgen_PartType_Evidence.csv")
 
     written: list[Path] = []
     templates = template_columns(cfg.samples_dir)
@@ -216,6 +228,7 @@ def generate_onboarding_csvs(cfg: PlanningConfig, out_dir: Path) -> list[Path]:
         issue_tracker,
         manual_warehouses,
         spi_cost_history,
+        altsgen_part_type_evidence,
     )
 
     for object_name, df in outputs.items():
@@ -252,6 +265,7 @@ def build_template_outputs(
     issue_tracker: pd.DataFrame | None = None,
     manual_warehouses: pd.DataFrame | None = None,
     spi_cost_history: pd.DataFrame | None = None,
+    altsgen_part_type_evidence: pd.DataFrame | None = None,
 ) -> dict[str, pd.DataFrame]:
     outputs: dict[str, pd.DataFrame] = {}
     for object_name, columns in templates.items():
@@ -286,6 +300,11 @@ def build_template_outputs(
                 purchase_orders if purchase_orders is not None else pd.DataFrame(),
                 columns,
                 combined_spi,
+            )
+        elif object_name == "PartTypes":
+            outputs[object_name] = build_template_part_types(
+                altsgen_part_type_evidence if altsgen_part_type_evidence is not None else pd.DataFrame(),
+                columns,
             )
         elif object_name == "InventoryTransfers":
             outputs[object_name] = build_template_inventory_transfers(stock_flow, columns)
@@ -1081,6 +1100,34 @@ def build_template_part_cost(
         if column in out.columns:
             out[column] = rows[column]
     return out.drop_duplicates(subset=["partCode"], keep="first") if "partCode" in out.columns else out
+
+
+def build_template_part_types(altsgen_evidence: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+    if altsgen_evidence.empty:
+        return pd.DataFrame(columns=columns)
+    source = altsgen_evidence.copy()
+    for column in ["status", "partType", "partTypeDescription", "isReworkable"]:
+        if column not in source.columns:
+            source[column] = ""
+        source[column] = source[column].map(_clean_text)
+    source = source[
+        source["status"].str.lower().eq("ok")
+        & source["partType"].str.strip().ne("")
+        & source["partType"].str.lower().ne("unknown")
+    ].copy()
+    if source.empty:
+        return pd.DataFrame(columns=columns)
+
+    source = source.drop_duplicates(subset=["partType"], keep="last").sort_values("partType").reset_index(drop=True)
+    out = _blank_template(columns, len(source))
+    if "partType" in out.columns:
+        out["partType"] = source["partType"]
+    if "partTypeDescription" in out.columns:
+        fallback = source["partType"].map(lambda value: " ".join(str(value).replace("-", "_").split("_")).title())
+        out["partTypeDescription"] = source["partTypeDescription"].where(source["partTypeDescription"].str.strip().ne(""), fallback)
+    if "isReworkable" in out.columns:
+        out["isReworkable"] = source["isReworkable"]
+    return out[columns].reset_index(drop=True)
 
 
 def build_parts_usage_evidence(usage: pd.DataFrame, masters: pd.DataFrame | None) -> pd.DataFrame:
