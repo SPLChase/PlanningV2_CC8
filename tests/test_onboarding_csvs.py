@@ -18,6 +18,7 @@ from planning_v2.onboarding_csvs import (
     build_template_inventory_transfers,
     filter_active_warehouses,
     build_stock_detail,
+    validate_template_outputs,
     validate_outputs,
 )
 from planning_v2.schemas import CONFIRMED_OUTPUT_OBJECTS, PENDING_OUTPUT_OBJECTS
@@ -636,6 +637,29 @@ class OnboardingCsvTests(unittest.TestCase):
 
         self.assertIn("FAIL", set(result["Status"]))
         self.assertIn("PENDING", set(result["Status"]))
+
+    def test_template_validation_applies_confirmed_object_decisions(self) -> None:
+        templates = {
+            "Models": ["modelId"],
+            "RepairOrder": ["repairOrderId"],
+            "WarehouseExclusions": ["warehouseId"],
+        }
+        outputs = {name: pd.DataFrame(columns=columns) for name, columns in templates.items()}
+
+        result = validate_template_outputs(Path("out"), outputs, templates)
+        by_object = result.set_index("Object")
+
+        self.assertEqual(by_object.loc["Models", "Status"], "DEFERRED")
+        self.assertEqual(by_object.loc["RepairOrder", "Status"], "OUT_OF_SCOPE")
+        self.assertEqual(by_object.loc["WarehouseExclusions", "Status"], "PASS")
+
+    def test_template_validation_still_fails_bad_schema_for_deferred_objects(self) -> None:
+        templates = {"Models": ["modelId"]}
+        outputs = {"Models": pd.DataFrame(columns=["wrong"])}
+
+        result = validate_template_outputs(Path("out"), outputs, templates)
+
+        self.assertEqual(result.loc[0, "Status"], "FAIL")
 
 
 if __name__ == "__main__":

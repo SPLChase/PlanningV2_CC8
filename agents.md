@@ -113,6 +113,14 @@ This repo is for onboarding CoCre8 data into the external Planning V2 Excel/CSV 
 - `PurchaseOrders.csv`:
   - Use live SAP PO lines and receipts.
   - HelpDesk export is reconciliation/enrichment evidence, not a replacement source.
+- MVP/deferred template decisions from Chris:
+  - `Models.csv`: important, but not for MVP.
+  - `RepairOrder.csv`: not used by CoCre8.
+  - `ServiceOrder.csv`: would be the HelpDesk ticket list, but without ticket close times it is not usable for MVP.
+  - `Yields.csv`: means expected output/uses or average years before breakdown; not for MVP.
+  - `Nodes.csv`: umbrella for regional warehouse/address hierarchy; not for MVP.
+  - `ActionGroups.csv`: technician/action group by region; not for MVP.
+  - `WarehouseExclusions.csv`: no exclusions to start with, so an empty upload is intentional.
 
 ## Workbook / Spreadsheet Generation
 

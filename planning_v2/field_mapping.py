@@ -11,10 +11,9 @@ from typing import Iterable
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
-from openpyxl.worksheet.table import Table, TableStyleInfo
 
 from planning_v2.config import PlanningConfig, get_config
-from planning_v2.schemas import CONFIRMED_OUTPUT_OBJECTS, FIELD_MAP_WORKBOOK, PENDING_OUTPUT_OBJECTS
+from planning_v2.schemas import CONFIRMED_OUTPUT_OBJECTS, FIELD_MAP_WORKBOOK, PENDING_OUTPUT_OBJECTS, TEMPLATE_OBJECT_DECISIONS
 from planning_v2.template_specs import load_template_fields, template_columns
 from planning_v2.onboarding_csvs import POPULATED_TEMPLATE_FIELDS
 
@@ -28,6 +27,7 @@ STATUS_INVESTIGATE_SAP = "Investigate SAP first"
 STATUS_INVESTIGATE_EXTERNAL = "Investigate source"
 STATUS_NOT_AVAILABLE = "Not available in checked source"
 STATUS_OUT_OF_SCOPE = "Out of v1 scope"
+STATUS_DEFERRED = "Deferred post-MVP"
 
 HEADER_FILL = PatternFill("solid", fgColor="1F4E78")
 HEADER_FONT = Font(color="FFFFFF", bold=True)
@@ -35,14 +35,6 @@ CONFIRMED_FILL = PatternFill("solid", fgColor="D9EAD3")
 REVIEW_FILL = PatternFill("solid", fgColor="FCE4D6")
 UNKNOWN_FILL = PatternFill("solid", fgColor="F4CCCC")
 STATIC_FILL = PatternFill("solid", fgColor="E7E6E6")
-TABLE_STYLE = TableStyleInfo(
-    name="TableStyleMedium2",
-    showFirstColumn=False,
-    showLastColumn=False,
-    showRowStripes=True,
-    showColumnStripes=False,
-)
-
 WAREHOUSE_TEMPLATE_NOTES = {
     "addressId": "Expected site/address id linking to the Addresses template. Data dictionary field: warehouse.address_id.",
     "nodeId": "Expected associated planning hierarchy node id. Data fields list this as warehouse.node_id / associated node.",
@@ -501,6 +493,21 @@ def template_field_rows(cfg: PlanningConfig) -> list[dict[str, str]]:
                 source = ""
                 confidence = ""
                 notes = out_of_scope_note
+            elif object_name in TEMPLATE_OBJECT_DECISIONS:
+                decision = TEMPLATE_OBJECT_DECISIONS[object_name]
+                if decision["status"] == "OUT_OF_SCOPE":
+                    status = STATUS_OUT_OF_SCOPE
+                    source = ""
+                    confidence = "High"
+                elif decision["status"] == "PASS":
+                    status = STATUS_CONFIRMED
+                    source = "Business decision"
+                    confidence = "High"
+                else:
+                    status = STATUS_DEFERRED
+                    source = ""
+                    confidence = "High"
+                notes = decision["notes"]
             elif source:
                 status = STATUS_CONFIRMED
                 confidence = "High" if field.field_name not in {"uniqueId", "primaryPartNumber"} else "Medium"
@@ -548,7 +555,7 @@ def template_field_rows(cfg: PlanningConfig) -> list[dict[str, str]]:
 def template_unknown_rows(cfg: PlanningConfig) -> list[dict[str, str]]:
     rows = []
     for row in template_field_rows(cfg):
-        if row["Source Status"] in {STATUS_CONFIRMED, STATUS_OUT_OF_SCOPE}:
+        if row["Source Status"] in {STATUS_CONFIRMED, STATUS_OUT_OF_SCOPE, STATUS_DEFERRED}:
             continue
         rows.append(
             {
@@ -570,6 +577,18 @@ def template_output_rows(cfg: PlanningConfig) -> list[dict[str, str]]:
     for row in template_field_rows(cfg):
         by_object.setdefault(row["Template Object"], []).append(row)
     for object_name, field_rows in by_object.items():
+        object_decision = TEMPLATE_OBJECT_DECISIONS.get(object_name)
+        if object_decision is not None:
+            rows.append(
+                {
+                    "Object": object_name,
+                    "CSV": f"{object_name}.csv",
+                    "Readiness": object_decision["readiness"],
+                    "Fields": ", ".join(row["Field"] for row in field_rows),
+                    "Blockers": object_decision["notes"],
+                }
+            )
+            continue
         relevant = [row for row in field_rows if row["Source Status"] != STATUS_OUT_OF_SCOPE]
         populated = [row for row in relevant if row["Source Status"] == STATUS_CONFIRMED]
         blockers = [row["Field"] for row in relevant if row["Source Status"] != STATUS_CONFIRMED]
@@ -737,7 +756,6 @@ def _write_sheet(workbook: Workbook, title: str, rows: list[dict[str, str]]) -> 
         cell.font = HEADER_FONT
         cell.alignment = Alignment(horizontal="center")
     worksheet.freeze_panes = "A2"
-    worksheet.auto_filter.ref = worksheet.dimensions
     worksheet.sheet_view.showGridLines = False
 
     for row in worksheet.iter_rows(min_row=2):
@@ -750,11 +768,6 @@ def _write_sheet(workbook: Workbook, title: str, rows: list[dict[str, str]]) -> 
         if fill:
             for cell in row:
                 cell.fill = fill
-
-    table_ref = f"A1:{get_column_letter(worksheet.max_column)}{worksheet.max_row}"
-    table = Table(displayName=re.sub(r"[^A-Za-z0-9_]", "", title)[:25] or "Table", ref=table_ref)
-    table.tableStyleInfo = TABLE_STYLE
-    worksheet.add_table(table)
 
     for column_cells in worksheet.columns:
         header = clean_text(column_cells[0].value)
@@ -769,7 +782,7 @@ def _status_fill(status: str) -> PatternFill | None:
         return REVIEW_FILL
     if status in {STATUS_INVESTIGATE_SAP, STATUS_INVESTIGATE_EXTERNAL, STATUS_NOT_AVAILABLE, "Pending/header only"}:
         return UNKNOWN_FILL
-    if status == STATUS_OUT_OF_SCOPE:
+    if status in {STATUS_OUT_OF_SCOPE, STATUS_DEFERRED, "Deferred post-MVP"}:
         return STATIC_FILL
     return None
 

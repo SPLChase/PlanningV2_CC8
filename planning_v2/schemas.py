@@ -59,6 +59,44 @@ FIELD_MAP_SHEETS = [
     "SAP Investigation Log",
 ]
 
+TEMPLATE_OBJECT_DECISIONS = {
+    "Models": {
+        "status": "DEFERRED",
+        "readiness": "Deferred post-MVP",
+        "notes": "Chris feedback: important, but not for MVP.",
+    },
+    "RepairOrder": {
+        "status": "OUT_OF_SCOPE",
+        "readiness": "Out of CoCre8 scope",
+        "notes": "Chris feedback: RepairOrder is not used by CoCre8.",
+    },
+    "ServiceOrder": {
+        "status": "DEFERRED",
+        "readiness": "Deferred post-MVP",
+        "notes": "Chris feedback: this would be the HelpDesk ticket list, but without ticket close times it is not usable for MVP.",
+    },
+    "Yields": {
+        "status": "DEFERRED",
+        "readiness": "Deferred post-MVP",
+        "notes": "Chris feedback: yield means expected uses or average years before breakdown; not for MVP.",
+    },
+    "Nodes": {
+        "status": "DEFERRED",
+        "readiness": "Deferred post-MVP",
+        "notes": "Chris feedback: regional umbrella for warehouse/address hierarchy; not for MVP.",
+    },
+    "ActionGroups": {
+        "status": "DEFERRED",
+        "readiness": "Deferred post-MVP",
+        "notes": "Chris feedback: technician/action group by region; not for MVP.",
+    },
+    "WarehouseExclusions": {
+        "status": "PASS",
+        "readiness": "Ready",
+        "notes": "Chris feedback: no warehouse exclusions to start with; empty upload is intentional.",
+    },
+}
+
 CONFIRMED_OUTPUT_OBJECTS = {
     "spl_masters": [
         "part_id",

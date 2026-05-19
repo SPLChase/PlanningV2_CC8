@@ -19,7 +19,7 @@ from planning_v2.issue_tracker import (
     purchase_order_ticket_matches,
     read_issue_tracker,
 )
-from planning_v2.schemas import CONFIRMED_OUTPUT_OBJECTS, PENDING_OUTPUT_OBJECTS
+from planning_v2.schemas import CONFIRMED_OUTPUT_OBJECTS, PENDING_OUTPUT_OBJECTS, TEMPLATE_OBJECT_DECISIONS
 from planning_v2.sap_extracts import fetch_live_delivery_note_usage, fetch_live_purchase_orders, fetch_live_template_sources
 from planning_v2.template_specs import template_columns
 
@@ -1455,6 +1455,10 @@ def validate_template_outputs(
         if missing:
             status = "FAIL"
             notes = f"Missing template columns: {', '.join(missing)}"
+        elif object_name in TEMPLATE_OBJECT_DECISIONS:
+            decision = TEMPLATE_OBJECT_DECISIONS[object_name]
+            status = decision["status"]
+            notes = decision["notes"]
         elif not scoped_columns:
             status = "OUT_OF_SCOPE"
             notes = "All template fields are out of CoCre8 v1 scope."
