@@ -84,7 +84,10 @@ This repo is for onboarding CoCre8 data into the external Planning V2 Excel/CSV 
   - `partType` maps to Altsgen `commodity_type`.
   - `partTypeDescription` maps to API `spec_summary.description` when present, otherwise a human-readable commodity type label.
   - `isReworkable` is not supplied by Altsgen; leave blank until business rules are confirmed.
-  - CLI: `.\.venv\Scripts\python.exe -m planning_v2.altsgen_batch --limit 500 --batch-size 500`.
+  - CLI for all remaining parts: `.\.venv\Scripts\python.exe -m planning_v2.altsgen_batch --limit 0 --batch-size 500`.
+  - CLI for one 500-row batch: `.\.venv\Scripts\python.exe -m planning_v2.altsgen_batch --limit 500 --batch-size 500`.
+  - By default, the runner skips parts already present in Altsgen evidence. Use `--include-existing` only for an intentional rerun.
+  - `Parts.csv.partType` is populated from the same Altsgen evidence by actual `PartNumber`.
   - Evidence is written under ignored `data/output/review_evidence/Altsgen_*`.
 - `WarehouseStockOnHand.csv`:
   - `partCode` maps to SAP `OITW.ItemCode`.

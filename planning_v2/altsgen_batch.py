@@ -130,6 +130,15 @@ def load_co_cre8_parts(parts_csv: Path, *, limit: int) -> pd.DataFrame:
     return parts
 
 
+def _processed_part_numbers(evidence_path: Path) -> set[str]:
+    if not evidence_path.exists():
+        return set()
+    evidence = pd.read_csv(evidence_path, dtype=str, encoding="utf-8-sig").fillna("")
+    if "PartNumber" not in evidence.columns:
+        return set()
+    return {_clean_text(value) for value in evidence["PartNumber"] if _clean_text(value)}
+
+
 def _post_batch(
     settings: AltsgenSettings,
     rows: list[dict[str, Any]],
@@ -260,58 +269,70 @@ def run_altsgen_part_type_batch(
     submit_timeout_sec: float = 180.0,
     force_refresh: bool = False,
     resume_batch_id: str | None = None,
+    skip_existing: bool = True,
 ) -> dict[str, Any]:
     settings = _load_altsgen_settings(env_file)
-    parts = load_co_cre8_parts(parts_csv, limit=limit)
+    review_dir = out_dir.parent / "review_evidence"
+    audit_path = review_dir / ALTSGEN_BATCH_AUDIT
+    raw_path = review_dir / ALTSGEN_RAW_RESULTS
+    evidence_path = review_dir / ALTSGEN_PART_TYPE_EVIDENCE
+    parts = load_co_cre8_parts(parts_csv, limit=0)
+    selected_before_skip = len(parts)
+    if skip_existing and not force_refresh and not resume_batch_id:
+        processed = _processed_part_numbers(evidence_path)
+        parts = parts[~parts["PartNumber"].map(_clean_text).isin(processed)].copy().reset_index(drop=True)
+    if limit > 0:
+        parts = parts.head(limit)
     batch_size = min(max(batch_size, 1), BATCH_API_MAX_PARTS)
     rows = parts.to_dict(orient="records")
     chunks = [rows[index : index + batch_size] for index in range(0, len(rows), batch_size)]
     if not chunks and not resume_batch_id:
         raise ValueError("No parts selected for Altsgen batch.")
-
-    review_dir = out_dir.parent / "review_evidence"
-    audit_path = review_dir / ALTSGEN_BATCH_AUDIT
-    raw_path = review_dir / ALTSGEN_RAW_RESULTS
-    evidence_path = review_dir / ALTSGEN_PART_TYPE_EVIDENCE
     row_lookup = {_clean_text(row.get("PartNumber")): row for row in rows}
 
-    submitted_batches: dict[str, dict[str, Any]] = {}
     audit_records: list[dict[str, Any]] = []
-    if resume_batch_id:
-        submitted_batches[_clean_text(resume_batch_id)] = {"row_lookup": row_lookup, "last_payload": {}}
-    else:
-        first_chunk = chunks[0]
-        submitted = _post_batch(settings, first_chunk, force_refresh=force_refresh, submit_timeout_sec=submit_timeout_sec)
-        batch_id = _clean_text(submitted.get("batch_id"))
-        if not batch_id:
-            raise RuntimeError(f"Altsgen batch response did not include batch_id: {submitted}")
-        submitted_batches[batch_id] = {
-            "row_lookup": {_clean_text(row.get("PartNumber")): row for row in first_chunk},
-            "last_payload": submitted,
-        }
-        submit_record = {
-            "observedUtc": _utc_now(),
-            "batchId": batch_id,
-            "status": _clean_text(submitted.get("status")).lower() or "submitted",
-            "total": submitted.get("total"),
-            "done": submitted.get("done"),
-            "elapsedSeconds": submitted.get("elapsed_seconds"),
-        }
-        audit_records.append(submit_record)
-        _append_jsonl(audit_path, [submit_record])
-        print(f"Submitted Altsgen batch {batch_id} with {len(first_chunk)} parts.", flush=True)
-
-    completed: set[str] = set()
-    deadline = time.monotonic() + max(poll_timeout_sec, 0.0)
     evidence_rows: list[dict[str, Any]] = []
     raw_records: list[dict[str, Any]] = []
+    submitted_batch_ids: list[str] = []
+    completed_batch_ids: list[str] = []
+    incomplete_batch_ids: list[str] = []
 
-    while len(completed) < len(submitted_batches) and time.monotonic() < deadline:
-        for batch_id, meta in submitted_batches.items():
-            if batch_id in completed:
-                continue
-            payload = meta["last_payload"] or _poll_batch(settings, batch_id)
-            meta["last_payload"] = {}
+    batches_to_process: list[tuple[str | None, list[dict[str, Any]], dict[str, Any]]] = []
+    if resume_batch_id:
+        batches_to_process.append((_clean_text(resume_batch_id), rows, {}))
+    else:
+        for chunk in chunks:
+            batches_to_process.append((None, chunk, {}))
+
+    for chunk_index, (existing_batch_id, chunk, initial_payload) in enumerate(batches_to_process, start=1):
+        chunk_lookup = {_clean_text(row.get("PartNumber")): row for row in chunk} or row_lookup
+        if existing_batch_id:
+            batch_id = existing_batch_id
+            payload = initial_payload
+        else:
+            submitted = _post_batch(settings, chunk, force_refresh=force_refresh, submit_timeout_sec=submit_timeout_sec)
+            batch_id = _clean_text(submitted.get("batch_id"))
+            if not batch_id:
+                raise RuntimeError(f"Altsgen batch response did not include batch_id: {submitted}")
+            payload = submitted
+            submit_record = {
+                "observedUtc": _utc_now(),
+                "batchId": batch_id,
+                "status": _clean_text(submitted.get("status")).lower() or "submitted",
+                "total": submitted.get("total"),
+                "done": submitted.get("done"),
+                "elapsedSeconds": submitted.get("elapsed_seconds"),
+            }
+            audit_records.append(submit_record)
+            _append_jsonl(audit_path, [submit_record])
+            print(f"Submitted Altsgen batch {batch_id} with {len(chunk)} parts ({chunk_index}/{len(batches_to_process)}).", flush=True)
+        submitted_batch_ids.append(batch_id)
+
+        deadline = time.monotonic() + max(poll_timeout_sec, 0.0)
+        complete = False
+        while time.monotonic() < deadline:
+            if not payload:
+                payload = _poll_batch(settings, batch_id)
             batch_status = _clean_text(payload.get("status")).lower()
             audit_record = {
                 "observedUtc": _utc_now(),
@@ -330,20 +351,26 @@ def run_altsgen_part_type_batch(
                 evidence_rows.append(
                     _evidence_row(
                         batch_id=batch_id,
-                        source_row=meta["row_lookup"].get(_clean_text(item.get("seed_pn"))),
+                        source_row=chunk_lookup.get(_clean_text(item.get("seed_pn"))),
                         item=item,
                     )
                 )
             if batch_status in {"completed", "failed"}:
-                completed.add(batch_id)
-        if len(completed) < len(submitted_batches) and time.monotonic() < deadline:
+                complete = True
+                completed_batch_ids.append(batch_id)
+                break
             time.sleep(max(poll_interval_sec, 1.0))
-            for batch_id in submitted_batches:
-                if batch_id not in completed:
-                    submitted_batches[batch_id]["last_payload"] = _poll_batch(settings, batch_id)
+            payload = _poll_batch(settings, batch_id)
 
-    _append_jsonl(raw_path, raw_records)
-    evidence = _write_evidence(evidence_path, evidence_rows)
+        _append_jsonl(raw_path, raw_records)
+        raw_records = []
+        evidence = _write_evidence(evidence_path, evidence_rows)
+        evidence_rows = []
+        if not complete:
+            incomplete_batch_ids.append(batch_id)
+            break
+
+    evidence = pd.read_csv(evidence_path, dtype=str, encoding="utf-8-sig").fillna("") if evidence_path.exists() else pd.DataFrame()
 
     cfg = get_config()
     part_type_columns = template_columns(cfg.samples_dir)["PartTypes"]
@@ -356,9 +383,11 @@ def run_altsgen_part_type_batch(
     report = {
         "generatedUtc": _utc_now(),
         "selectedParts": int(len(parts)),
-        "submittedBatchIds": list(submitted_batches.keys()),
-        "completedBatchIds": sorted(completed),
-        "incompleteBatchIds": sorted(set(submitted_batches) - completed),
+        "availablePartsBeforeSkip": int(selected_before_skip),
+        "skipExisting": bool(skip_existing),
+        "submittedBatchIds": submitted_batch_ids,
+        "completedBatchIds": completed_batch_ids,
+        "incompleteBatchIds": incomplete_batch_ids,
         "statusCountsAllEvidence": {str(key): int(value) for key, value in statuses.items()},
         "partTypeRows": int(len(part_types)),
         "partTypesCsv": str(part_types_path),
@@ -383,6 +412,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--submit-timeout-sec", type=float, default=180.0)
     parser.add_argument("--force-refresh", action="store_true")
     parser.add_argument("--resume-batch-id", default=None)
+    parser.add_argument("--include-existing", action="store_true", help="Do not skip parts already present in Altsgen evidence.")
     args = parser.parse_args(argv)
     report = run_altsgen_part_type_batch(
         parts_csv=args.parts_csv,
@@ -395,6 +425,7 @@ def main(argv: list[str] | None = None) -> int:
         submit_timeout_sec=args.submit_timeout_sec,
         force_refresh=args.force_refresh,
         resume_batch_id=args.resume_batch_id,
+        skip_existing=not args.include_existing,
     )
     print(json.dumps(report, indent=2))
     return 0

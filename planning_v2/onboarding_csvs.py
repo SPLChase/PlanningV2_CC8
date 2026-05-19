@@ -36,6 +36,7 @@ POPULATED_TEMPLATE_FIELDS = {
         "isObsolete": "Business rule: N for all CoCre8 stock for now",
         "isExcludeFromReplenishment": "Business rule: N for all CoCre8 stock for now",
         "purchaseLeadTimeDays": "Business rule: default 3 days; 180 days when description contains BBU",
+        "partType": "Hosted Altsgen batch API:commodity_type by actual PartNumber",
     },
     "Warehouses": {
         "warehouseId": "SAP Service Layer Warehouses:WarehouseCode",
@@ -270,7 +271,7 @@ def build_template_outputs(
     outputs: dict[str, pd.DataFrame] = {}
     for object_name, columns in templates.items():
         if object_name == "Parts":
-            outputs[object_name] = build_template_parts(parts, columns, spi, masters)
+            outputs[object_name] = build_template_parts(parts, columns, spi, masters, altsgen_part_type_evidence)
         elif object_name == "Warehouses":
             outputs[object_name] = build_template_warehouses(warehouses, columns, manual_warehouses)
         elif object_name == "WarehouseStockOnHand":
@@ -709,6 +710,28 @@ def _master_lookup(masters: pd.DataFrame | None) -> dict[str, str]:
     return master_lookup(masters)
 
 
+def _part_type_lookup(altsgen_evidence: pd.DataFrame | None) -> dict[str, str]:
+    if altsgen_evidence is None or altsgen_evidence.empty:
+        return {}
+    required = {"PartNumber", "status", "partType"}
+    if not required.issubset(altsgen_evidence.columns):
+        return {}
+    source = altsgen_evidence.copy()
+    source["PartKey"] = source["PartNumber"].map(_part_key)
+    source["Status"] = source["status"].map(_clean_text).str.lower()
+    source["PartType"] = source["partType"].map(_clean_text)
+    source = source[
+        source["PartKey"].str.strip().ne("")
+        & source["Status"].eq("ok")
+        & source["PartType"].str.strip().ne("")
+        & source["PartType"].str.lower().ne("unknown")
+    ].copy()
+    if source.empty:
+        return {}
+    source = source.drop_duplicates(subset=["PartKey"], keep="last")
+    return dict(zip(source["PartKey"], source["PartType"], strict=False))
+
+
 def _stable_rowkey_int(value: object) -> int:
     text = str(value or "").strip()
     if not text:
@@ -721,12 +744,14 @@ def build_template_parts(
     columns: list[str],
     spi: pd.DataFrame | None = None,
     masters: pd.DataFrame | None = None,
+    altsgen_evidence: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     if parts.empty:
         return pd.DataFrame(columns=columns)
     spi = spi if spi is not None else pd.DataFrame()
     main_alt_by_part = _spi_main_alt_lookup(spi)
     master_by_part = _master_lookup(masters)
+    part_type_by_part = _part_type_lookup(altsgen_evidence)
     out = _blank_template(columns, len(parts))
     item_keys = _col(parts, "ItemNo").map(_part_key)
     main_alt = item_keys.map(main_alt_by_part).fillna("")
@@ -759,6 +784,8 @@ def build_template_parts(
     if "purchaseLeadTimeDays" in out.columns:
         desc = out["description"].astype(str)
         out["purchaseLeadTimeDays"] = desc.str.contains("BBU", case=False, na=False).map({True: 180, False: 3})
+    if "partType" in out.columns:
+        out["partType"] = item_keys.map(part_type_by_part).fillna("")
     return out.drop_duplicates(subset=[col for col in ["SPLMaster", "PartNumber"] if col in out.columns], keep="first")
 
 

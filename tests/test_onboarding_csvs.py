@@ -267,6 +267,21 @@ class OnboardingCsvTests(unittest.TestCase):
         self.assertEqual(out.loc[1, "description"], "null")
         self.assertEqual(out.loc[1, "purchaseLeadTimeDays"], 3)
 
+    def test_template_parts_populates_part_type_from_altsgen_evidence(self) -> None:
+        parts = pd.DataFrame({"ItemNo": ["A1", "B2"], "ItemDescription": ["Drive", "Battery"]})
+        altsgen = pd.DataFrame(
+            {
+                "PartNumber": ["A1", "B2"],
+                "status": ["ok", "error"],
+                "partType": ["hdd_sas_2_5_sff", "laptop_battery"],
+            }
+        )
+
+        out = build_template_parts(parts, ["PartNumber", "partType"], altsgen_evidence=altsgen)
+
+        self.assertEqual(out.loc[0, "partType"], "hdd_sas_2_5_sff")
+        self.assertEqual(out.loc[1, "partType"], "")
+
     def test_template_parts_usage_uses_negative_dn_rows_only(self) -> None:
         usage = pd.DataFrame(
             {
