@@ -268,7 +268,10 @@ def _refresh_parts_csv_part_types(parts_csv: Path, evidence: pd.DataFrame) -> in
     if not lookup:
         return 0
     mapped = parts["PartNumber"].map(_clean_text).map(lookup).fillna("")
-    changed = int((mapped.astype(str).str.strip().ne("")) & (parts["partType"].astype(str).str.strip() != mapped.astype(str).str.strip())).sum()
+    changed_mask = mapped.astype(str).str.strip().ne("") & (
+        parts["partType"].astype(str).str.strip() != mapped.astype(str).str.strip()
+    )
+    changed = int(changed_mask.sum())
     parts["partType"] = parts["partType"].where(mapped.astype(str).str.strip().eq(""), mapped)
     parts.to_csv(parts_csv, index=False, encoding="utf-8-sig")
     return changed
