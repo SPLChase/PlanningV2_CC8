@@ -66,6 +66,7 @@ POPULATED_TEMPLATE_FIELDS = {
     "PartsUsage": {
         "orderNumber": "SAP Service Layer SQLQueries:ODLN.NumAtCard or parsed Call Nr from ODLN.Comments",
         "requestId": "SAP Service Layer SQLQueries:ODLN.NumAtCard or parsed Call Nr from ODLN.Comments",
+        "OrderType": "Business rule: service_order for all CoCre8 usage",
         "customerCompanyCode": "SAP Service Layer SQLQueries:parsed Customer from ODLN.Comments where present",
         "orderStartDatetime": "HelpDesk issue tracker Created date by unambiguous call-number match",
         "orderStatus": "HelpDesk issue tracker Status by unambiguous call-number match",
@@ -780,6 +781,8 @@ def _build_template_parts_usage_from_sap_delivery_notes(
         out["orderNumber"] = order_number
     if "requestId" in out.columns:
         out["requestId"] = call_number
+    if "OrderType" in out.columns:
+        out["OrderType"] = "service_order"
     if "customerCompanyCode" in out.columns:
         out["customerCompanyCode"] = customer
     if "orderStartDatetime" in out.columns:
@@ -828,6 +831,8 @@ def _build_template_parts_usage_from_stock_audit(
     out = _blank_template(columns, len(dn))
     if "orderNumber" in out.columns:
         out["orderNumber"] = dn["Document"].astype(str).str.strip()
+    if "OrderType" in out.columns:
+        out["OrderType"] = "service_order"
     if "partCode" in out.columns:
         out["partCode"] = dn["Item No."].map(_part_key)
     if "Master" in out.columns:

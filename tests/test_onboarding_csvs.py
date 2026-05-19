@@ -324,6 +324,7 @@ class OnboardingCsvTests(unittest.TestCase):
             [
                 "orderNumber",
                 "requestId",
+                "OrderType",
                 "customerCompanyCode",
                 "orderStartDatetime",
                 "orderStatus",
@@ -412,6 +413,7 @@ class OnboardingCsvTests(unittest.TestCase):
             [
                 "orderNumber",
                 "requestId",
+                "OrderType",
                 "customerCompanyCode",
                 "orderStartDatetime",
                 "orderStatus",
@@ -429,6 +431,7 @@ class OnboardingCsvTests(unittest.TestCase):
 
         self.assertEqual(out.loc[0, "orderNumber"], "67548724")
         self.assertEqual(out.loc[0, "requestId"], "67548724")
+        self.assertEqual(out.loc[0, "OrderType"], "service_order")
         self.assertEqual(out.loc[0, "customerCompanyCode"], "Massmart")
         self.assertEqual(out.loc[0, "orderStartDatetime"], "2025-10-15")
         self.assertEqual(out.loc[0, "orderStatus"], "Closed")
