@@ -1341,8 +1341,11 @@ def build_template_vendors(purchase_orders: pd.DataFrame, columns: list[str]) ->
     out = _blank_template(columns, len(source))
     if "vendorId" in out.columns:
         out["vendorId"] = _col(source, "VendorId")
+    vendor_name = _first_col(source, ["VendorName", "vendorName", "Description", "CardName"])
     if "Description" in out.columns:
-        out["Description"] = _first_col(source, ["VendorName", "Description", "CardName"])
+        out["Description"] = vendor_name
+    if "vendorName" in out.columns:
+        out["vendorName"] = vendor_name
     if "isActive" in out.columns:
         out["isActive"] = _first_col(source, ["VendorIsActive", "isActive", "ValidFor"], default="Y").map(_normalise_yn)
     if "vendorId" in out.columns:

@@ -76,8 +76,9 @@ class OnboardingCsvTests(unittest.TestCase):
                 "VendorIsActive": ["Y", "Y", "N"],
             }
         )
-        vendors = build_template_vendors(purchase_orders, ["vendorId", "Description", "isActive"])
+        vendors = build_template_vendors(purchase_orders, ["vendorId", "vendorName", "Description", "isActive"])
         self.assertEqual(list(vendors["vendorId"]), ["V001", "V002"])
+        self.assertEqual(vendors.loc[0, "vendorName"], "Fujitsu")
         self.assertEqual(vendors.loc[0, "Description"], "Fujitsu")
         self.assertEqual(vendors.loc[1, "isActive"], "N")
 
