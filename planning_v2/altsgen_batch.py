@@ -175,8 +175,8 @@ def _poll_batch(settings: AltsgenSettings, batch_id: str) -> dict[str, Any]:
         settings,
         method="GET",
         endpoint=f"/api/v1/identify/batch/{batch_id}",
-        timeout_sec=max(settings.timeout_sec, 30.0),
-        retry_attempts=1,
+        timeout_sec=max(settings.timeout_sec, 120.0),
+        retry_attempts=3,
     )
     return response.json()
 
@@ -349,7 +349,23 @@ def run_altsgen_part_type_batch(
         complete = False
         while time.monotonic() < deadline:
             if not payload:
-                payload = _poll_batch(settings, batch_id)
+                try:
+                    payload = _poll_batch(settings, batch_id)
+                except requests.RequestException as exc:
+                    audit_record = {
+                        "observedUtc": _utc_now(),
+                        "batchId": batch_id,
+                        "status": "poll_error",
+                        "total": "",
+                        "done": "",
+                        "elapsedSeconds": "",
+                        "error": str(exc),
+                    }
+                    audit_records.append(audit_record)
+                    _append_jsonl(audit_path, [audit_record])
+                    time.sleep(max(poll_interval_sec, 1.0))
+                    payload = {}
+                    continue
             batch_status = _clean_text(payload.get("status")).lower()
             audit_record = {
                 "observedUtc": _utc_now(),
@@ -377,7 +393,21 @@ def run_altsgen_part_type_batch(
                 completed_batch_ids.append(batch_id)
                 break
             time.sleep(max(poll_interval_sec, 1.0))
-            payload = _poll_batch(settings, batch_id)
+            try:
+                payload = _poll_batch(settings, batch_id)
+            except requests.RequestException as exc:
+                audit_record = {
+                    "observedUtc": _utc_now(),
+                    "batchId": batch_id,
+                    "status": "poll_error",
+                    "total": "",
+                    "done": "",
+                    "elapsedSeconds": "",
+                    "error": str(exc),
+                }
+                audit_records.append(audit_record)
+                _append_jsonl(audit_path, [audit_record])
+                payload = {}
 
         _append_jsonl(raw_path, raw_records)
         raw_records = []
