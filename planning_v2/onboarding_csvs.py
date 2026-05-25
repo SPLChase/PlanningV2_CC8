@@ -33,9 +33,14 @@ POPULATED_TEMPLATE_FIELDS = {
         "description": "SAP Service Layer SQLQueries:OITM.ItemName",
         "isBootStockable": "Business rule: N for all CoCre8 stock",
         "isBranchStockable": "Business rule: Y for all CoCre8 stock",
+        "productClass": "Hosted Altsgen batch API: broad rollup from canonical_description",
+        "productType": "Hosted Altsgen batch API: canonical_description by actual PartNumber",
+        "isKit": "Business rule: Y when description, productType, or partType contains the word KIT; otherwise N",
         "isObsolete": "Business rule: N for all CoCre8 stock for now",
+        "isTool": "Business rule: Y only for parts 1531813 and 1534363; otherwise N",
         "isExcludeFromReplenishment": "Business rule: N for all CoCre8 stock for now",
         "purchaseLeadTimeDays": "Business rule: default 3 days; 180 days when description contains BBU",
+        "isCritical": "Business rule: Yes for all CoCre8 stock",
         "partType": "Hosted Altsgen batch API:commodity_type by actual PartNumber",
     },
     "Warehouses": {
@@ -63,7 +68,12 @@ POPULATED_TEMPLATE_FIELDS = {
         "Description": "SAP Service Layer SQLQueries:OCRD.CardName joined from PO vendor",
         "isActive": "SAP Service Layer SQLQueries:OCRD.validFor joined from PO vendor",
     },
-    "Customers": {},
+    "Customers": {
+        "customerName": "HelpDesk issue tracker: distinct Customer values",
+        "Description": "HelpDesk issue tracker: distinct Customer values when the raw template uses Description",
+        "assignAnySkill": "Business rule: Y for HelpDesk-derived customer draft",
+        "isActive": "Business rule: Y for HelpDesk-derived customer draft",
+    },
     "PartsUsage": {
         "orderNumber": "SAP Service Layer SQLQueries:ODLN.NumAtCard or parsed Call Nr from ODLN.Comments",
         "requestId": "SAP Service Layer SQLQueries:ODLN.NumAtCard or parsed Call Nr from ODLN.Comments",
@@ -100,6 +110,7 @@ POPULATED_TEMPLATE_FIELDS = {
         "toWarehouseId": "Stock Audit Report.txt:Whse on positive IM quantity row",
         "demandStatus": "Business rule: Fulfilled for posted paired IM rows",
         "orderStatusIsClosed": "Business rule: Y for posted paired IM rows",
+        "movementType": "Template example default: Internal_move for posted warehouse transfer rows",
         "isResolved": "Business rule: Y for posted paired IM rows",
         "partNumber": "Stock Audit Report.txt:forward-filled Item No. for IM rows",
         "quantity": "Stock Audit Report.txt:absolute IM Quantity for paired rows",
@@ -113,6 +124,7 @@ POPULATED_TEMPLATE_FIELDS = {
     "PartTypes": {
         "partType": "Hosted Altsgen batch API:commodity_type for CoCre8 parts",
         "partTypeDescription": "Hosted Altsgen batch API:spec_summary.description or humanized commodity_type",
+        "isReworkable": "Business rule: N/No for all CoCre8 part types",
     },
 }
 
@@ -129,13 +141,15 @@ OUT_OF_SCOPE_TEMPLATE_FIELDS = {
     ("PartsUsage", "resolvedDateTime"),
     ("PartsUsage", "relCompanyId"),
     ("PartsUsage", "assignedPersonCode"),
+    ("Parts", "costCategory"),
     ("Parts", "isService"),
-    ("Parts", "isTool"),
     ("Parts", "isSmallPart"),
     ("PurchaseOrders", "customerId"),
     ("PurchaseOrders", "requestTicketDateTime"),
     ("PurchaseOrders", "isResolved"),
     ("InventoryTransfers", "addressId"),
+    ("InventoryTransfers", "Bpart"),
+    ("InventoryTransfers", "shipListCode"),
     ("Warehouses", "nodeId"),
     ("Warehouses", "isRepairWarehouse"),
     ("Warehouses", "isBootStockable"),
@@ -277,7 +291,7 @@ def build_template_outputs(
         elif object_name == "WarehouseStockOnHand":
             outputs[object_name] = build_template_stock_on_hand(inventory, columns, masters)
         elif object_name == "Customers":
-            outputs[object_name] = build_template_customers(customers, columns)
+            outputs[object_name] = build_template_customers(customers, columns, issue_tracker)
         elif object_name == "Vendors":
             outputs[object_name] = build_template_vendors(
                 purchase_orders if purchase_orders is not None else pd.DataFrame(),
@@ -732,6 +746,90 @@ def _part_type_lookup(altsgen_evidence: pd.DataFrame | None) -> dict[str, str]:
     return dict(zip(source["PartKey"], source["PartType"], strict=False))
 
 
+def _canonical_description_lookup(altsgen_evidence: pd.DataFrame | None) -> dict[str, str]:
+    if altsgen_evidence is None or altsgen_evidence.empty:
+        return {}
+    if "canonicalDescription" not in altsgen_evidence.columns:
+        return {}
+    return _altsgen_value_lookup(altsgen_evidence, "canonicalDescription")
+
+
+def _product_class_lookup(altsgen_evidence: pd.DataFrame | None) -> dict[str, str]:
+    if altsgen_evidence is None or altsgen_evidence.empty:
+        return {}
+    canonical = _canonical_description_lookup(altsgen_evidence)
+    part_types = _part_type_lookup(altsgen_evidence)
+    keys = set(canonical) | set(part_types)
+    return {
+        key: product_class
+        for key in keys
+        if (product_class := _product_class_from_altsgen(canonical.get(key, ""), part_types.get(key, "")))
+    }
+
+
+def _altsgen_value_lookup(altsgen_evidence: pd.DataFrame, value_column: str) -> dict[str, str]:
+    required = {"PartNumber", "status", value_column}
+    if not required.issubset(altsgen_evidence.columns):
+        return {}
+    source = altsgen_evidence.copy()
+    source["PartKey"] = source["PartNumber"].map(_part_key)
+    source["Status"] = source["status"].map(_clean_text).str.lower()
+    source["Value"] = source[value_column].map(_clean_text)
+    source = source[
+        source["PartKey"].str.strip().ne("")
+        & source["Status"].eq("ok")
+        & source["Value"].str.strip().ne("")
+    ].copy()
+    if source.empty:
+        return {}
+    source = source.drop_duplicates(subset=["PartKey"], keep="last")
+    return dict(zip(source["PartKey"], source["Value"], strict=False))
+
+
+def _product_class_from_altsgen(canonical_description: object, part_type: object = "") -> str:
+    text = f"{_clean_text(canonical_description)} {_clean_text(part_type)}".lower()
+    if not text.strip():
+        return ""
+    if any(token in text for token in ["hdd", "ssd", "disk", "drive", "storage", "tape", "raid cache"]):
+        return "STORAGE"
+    if any(token in text for token in ["ram", "memory", "dimm", "sodimm"]):
+        return "MEMORY"
+    if any(token in text for token in ["psu", "power supply", "adapter", "battery", "bbu"]):
+        return "POWER"
+    if any(token in text for token in ["motherboard", "mainboard", "backplane", "io board", "controller board"]):
+        return "BOARD"
+    if any(token in text for token in ["cpu", "processor", "heatsink"]):
+        return "CPU"
+    if any(token in text for token in ["fan", "cooling"]):
+        return "COOLING"
+    if any(token in text for token in ["cable", "connector", "transceiver", "sfp"]):
+        return "CONNECTIVITY"
+    if any(token in text for token in ["keyboard", "lcd", "screen", "panel", "cover", "hinge", "bezel", "touchpad"]):
+        return "DISPLAY_INPUT"
+    if any(token in text for token in ["chassis", "enclosure", "caddy", "tray", "bracket", "rail"]):
+        return "MECHANICAL"
+    return "OTHER"
+
+
+TOOL_PART_KEYS = {"1531813", "1534363"}
+KIT_KEYWORD_RE = re.compile(r"(?<![A-Za-z0-9])kit(?![A-Za-z0-9])", re.IGNORECASE)
+
+
+def _kit_flags(description: pd.Series, product_type: pd.Series, part_type: pd.Series) -> pd.Series:
+    combined = (
+        description.fillna("").astype(str)
+        + " "
+        + product_type.fillna("").astype(str)
+        + " "
+        + part_type.fillna("").astype(str)
+    )
+    return combined.str.contains(KIT_KEYWORD_RE, na=False).map({True: "Y", False: "N"})
+
+
+def _tool_flags(part_numbers: pd.Series) -> pd.Series:
+    return part_numbers.map(_part_key).isin(TOOL_PART_KEYS).map({True: "Y", False: "N"})
+
+
 def _stable_rowkey_int(value: object) -> int:
     text = str(value or "").strip()
     if not text:
@@ -752,6 +850,8 @@ def build_template_parts(
     main_alt_by_part = _spi_main_alt_lookup(spi)
     master_by_part = _master_lookup(masters)
     part_type_by_part = _part_type_lookup(altsgen_evidence)
+    product_type_by_part = _canonical_description_lookup(altsgen_evidence)
+    product_class_by_part = _product_class_lookup(altsgen_evidence)
     out = _blank_template(columns, len(parts))
     item_keys = _col(parts, "ItemNo").map(_part_key)
     main_alt = item_keys.map(main_alt_by_part).fillna("")
@@ -777,6 +877,10 @@ def build_template_parts(
         out["isBootStockable"] = "N"
     if "isBranchStockable" in out.columns:
         out["isBranchStockable"] = "Y"
+    if "productClass" in out.columns:
+        out["productClass"] = item_keys.map(product_class_by_part).fillna("")
+    if "productType" in out.columns:
+        out["productType"] = item_keys.map(product_type_by_part).fillna("")
     if "isObsolete" in out.columns:
         out["isObsolete"] = "N"
     if "isExcludeFromReplenishment" in out.columns:
@@ -784,8 +888,16 @@ def build_template_parts(
     if "purchaseLeadTimeDays" in out.columns:
         desc = out["description"].astype(str)
         out["purchaseLeadTimeDays"] = desc.str.contains("BBU", case=False, na=False).map({True: 180, False: 3})
+    if "isCritical" in out.columns:
+        out["isCritical"] = "Yes"
     if "partType" in out.columns:
         out["partType"] = item_keys.map(part_type_by_part).fillna("")
+    kit_product_type = item_keys.map(product_type_by_part).fillna("")
+    kit_part_type = item_keys.map(part_type_by_part).fillna("")
+    if "isKit" in out.columns:
+        out["isKit"] = _kit_flags(out["description"] if "description" in out.columns else _col(parts, "ItemDescription"), kit_product_type, kit_part_type)
+    if "isTool" in out.columns:
+        out["isTool"] = _tool_flags(_col(parts, "ItemNo"))
     return out.drop_duplicates(subset=[col for col in ["SPLMaster", "PartNumber"] if col in out.columns], keep="first")
 
 
@@ -1153,7 +1265,7 @@ def build_template_part_types(altsgen_evidence: pd.DataFrame, columns: list[str]
         fallback = source["partType"].map(lambda value: " ".join(str(value).replace("-", "_").split("_")).title())
         out["partTypeDescription"] = source["partTypeDescription"].where(source["partTypeDescription"].str.strip().ne(""), fallback)
     if "isReworkable" in out.columns:
-        out["isReworkable"] = source["isReworkable"]
+        out["isReworkable"] = "NO"
     return out[columns].reset_index(drop=True)
 
 
@@ -1473,7 +1585,7 @@ def build_template_inventory_transfers(stock_audit: pd.DataFrame, columns: list[
                     "toWarehouseId": str(to_row.get("Whse", "")).strip(),
                     "demandStatus": "Fulfilled",
                     "orderStatusIsClosed": "Y",
-                    "movementType": "",
+                    "movementType": "Internal_move",
                     "addressId": "",
                     "isResolved": "Y",
                     "partNumber": str(item_no).strip(),
@@ -1491,12 +1603,17 @@ def build_template_inventory_transfers(stock_audit: pd.DataFrame, columns: list[
     return out[columns].drop_duplicates(subset=["inventoryTransferImoId"], keep="first").reset_index(drop=True)
 
 
-def build_template_customers(customers: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
-    if customers.empty:
-        return pd.DataFrame(columns=columns)
-    source = customers[_col(customers, "CustomerCode").astype(str).str.strip().ne("")].copy()
+def build_template_customers(
+    customers: pd.DataFrame,
+    columns: list[str],
+    issue_tracker: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    source = _customer_rows_from_helpdesk(issue_tracker)
+    if source.empty and not customers.empty:
+        source = customers[_col(customers, "CustomerCode").astype(str).str.strip().ne("")].copy()
     if source.empty:
         return pd.DataFrame(columns=columns)
+
     out = _blank_template(columns, len(source))
     if "customerId" in out.columns:
         out["customerId"] = _col(source, "CustomerCode")
@@ -1504,7 +1621,44 @@ def build_template_customers(customers: pd.DataFrame, columns: list[str]) -> pd.
         out["Description"] = _col(source, "CustomerName")
     if "customerName" in out.columns:
         out["customerName"] = _col(source, "CustomerName")
-    return out.drop_duplicates(subset=["customerId"], keep="first") if "customerId" in out.columns else out
+    if "assignAnySkill" in out.columns:
+        out["assignAnySkill"] = "Y"
+    if "isActive" in out.columns:
+        out["isActive"] = "Y"
+
+    subset = ["customerId"] if "customerId" in out.columns and out["customerId"].astype(str).str.strip().ne("").any() else ["customerName"]
+    return out.drop_duplicates(subset=subset, keep="first").reset_index(drop=True)
+
+
+def _customer_rows_from_helpdesk(issue_tracker: pd.DataFrame | None) -> pd.DataFrame:
+    if issue_tracker is None or issue_tracker.empty or "Customer" not in issue_tracker.columns:
+        return pd.DataFrame(columns=["CustomerCode", "CustomerName", "TicketRows"])
+    work = issue_tracker.copy()
+    work["CustomerName"] = work["Customer"].map(_clean_text)
+    work = work[work["CustomerName"].str.strip().ne("")].copy()
+    if work.empty:
+        return pd.DataFrame(columns=["CustomerCode", "CustomerName", "TicketRows"])
+
+    work["CustomerKey"] = work["CustomerName"].str.upper().str.replace(r"\s+", " ", regex=True).str.strip()
+    grouped = (
+        work.groupby("CustomerKey", dropna=False)
+        .agg(
+            CustomerName=("CustomerName", _most_common_text),
+            TicketRows=("CustomerName", "size"),
+        )
+        .reset_index(drop=True)
+        .sort_values(["CustomerName"], key=lambda col: col.str.lower())
+    )
+    grouped["CustomerCode"] = ""
+    return grouped[["CustomerCode", "CustomerName", "TicketRows"]].reset_index(drop=True)
+
+
+def _most_common_text(values: pd.Series) -> str:
+    cleaned = values.map(_clean_text)
+    cleaned = cleaned[cleaned.str.strip().ne("")]
+    if cleaned.empty:
+        return ""
+    return str(cleaned.value_counts().idxmax())
 
 
 def validate_template_outputs(

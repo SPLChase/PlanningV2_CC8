@@ -90,6 +90,11 @@ TEMPLATE_OBJECT_DECISIONS = {
         "readiness": "Deferred post-MVP",
         "notes": "Chris feedback: technician/action group by region; not for MVP.",
     },
+    "Employees": {
+        "status": "DEFERRED",
+        "readiness": "Deferred post-MVP",
+        "notes": "User feedback: employees are not required for MVP.",
+    },
     "WarehouseExclusions": {
         "status": "PASS",
         "readiness": "Ready",

@@ -13,6 +13,7 @@ from planning_v2.onboarding_csvs import (
     build_template_parts_usage,
     build_template_parts_usage_from_issue_tracker,
     build_template_purchase_orders,
+    build_template_customers,
     build_template_warehouses,
     build_template_stock_on_hand,
     build_template_vendors,
@@ -26,6 +27,24 @@ from planning_v2.schemas import CONFIRMED_OUTPUT_OBJECTS, PENDING_OUTPUT_OBJECTS
 
 
 class OnboardingCsvTests(unittest.TestCase):
+    def test_template_customers_uses_helpdesk_customer_names_with_blank_sap_id(self) -> None:
+        issue_tracker = pd.DataFrame(
+            {
+                "Customer": ["Sanlam", "SANLAM", "Massmart", ""],
+            }
+        )
+
+        out = build_template_customers(
+            pd.DataFrame(),
+            ["customerId", "customerName", "customerGroupId", "assignAnySkill", "isActive"],
+            issue_tracker,
+        )
+
+        self.assertEqual(list(out["customerName"]), ["Massmart", "Sanlam"])
+        self.assertEqual(list(out["customerId"]), ["", ""])
+        self.assertEqual(set(out["assignAnySkill"]), {"Y"})
+        self.assertEqual(set(out["isActive"]), {"Y"})
+
     def test_stock_detail_numeric_fields_are_coerced(self) -> None:
         inventory = pd.DataFrame(
             {
@@ -121,7 +140,7 @@ class OnboardingCsvTests(unittest.TestCase):
         self.assertEqual(transfers.loc[0, "toWarehouseId"], "FUJH&M-C")
         self.assertEqual(transfers.loc[0, "demandStatus"], "Fulfilled")
         self.assertEqual(transfers.loc[0, "orderStatusIsClosed"], "Y")
-        self.assertEqual(transfers.loc[0, "movementType"], "")
+        self.assertEqual(transfers.loc[0, "movementType"], "Internal_move")
         self.assertEqual(transfers.loc[0, "addressId"], "")
         self.assertEqual(transfers.loc[0, "isResolved"], "Y")
         self.assertEqual(transfers.loc[0, "partNumber"], "A1")
@@ -254,33 +273,74 @@ class OnboardingCsvTests(unittest.TestCase):
                 "isBootStockable",
                 "isBranchStockable",
                 "isObsolete",
+                "isKit",
+                "isTool",
                 "isExcludeFromReplenishment",
                 "purchaseLeadTimeDays",
+                "isCritical",
             ],
         )
 
         self.assertEqual(out.loc[0, "isBootStockable"], "N")
         self.assertEqual(out.loc[0, "isBranchStockable"], "Y")
         self.assertEqual(out.loc[0, "isObsolete"], "N")
+        self.assertEqual(out.loc[0, "isKit"], "N")
+        self.assertEqual(out.loc[0, "isTool"], "N")
         self.assertEqual(out.loc[0, "isExcludeFromReplenishment"], "N")
         self.assertEqual(out.loc[0, "purchaseLeadTimeDays"], 180)
+        self.assertEqual(out.loc[0, "isCritical"], "Yes")
         self.assertEqual(out.loc[1, "description"], "null")
+        self.assertEqual(out.loc[1, "isKit"], "N")
+        self.assertEqual(out.loc[1, "isTool"], "N")
         self.assertEqual(out.loc[1, "purchaseLeadTimeDays"], 3)
+        self.assertEqual(out.loc[1, "isCritical"], "Yes")
 
-    def test_template_parts_populates_part_type_from_altsgen_evidence(self) -> None:
-        parts = pd.DataFrame({"ItemNo": ["A1", "B2"], "ItemDescription": ["Drive", "Battery"]})
+    def test_template_parts_marks_kits_and_confirmed_tools(self) -> None:
+        parts = pd.DataFrame(
+            {
+                "ItemNo": ["1531813", "1534363", "A3", "A4"],
+                "ItemDescription": ["Diagnostic set", "Tool item", "Printer KIT", "Spare"],
+                "DisplayDescription": ["", "", "", ""],
+            }
+        )
         altsgen = pd.DataFrame(
             {
-                "PartNumber": ["A1", "B2"],
-                "status": ["ok", "error"],
-                "partType": ["hdd_sas_2_5_sff", "laptop_battery"],
+                "PartNumber": ["A4"],
+                "status": ["ok"],
+                "partType": ["maintenance_kit"],
+                "canonicalDescription": ["Maintenance Kit"],
             }
         )
 
-        out = build_template_parts(parts, ["PartNumber", "partType"], altsgen_evidence=altsgen)
+        out = build_template_parts(parts, ["PartNumber", "description", "productType", "partType", "isKit", "isTool"], altsgen_evidence=altsgen)
+
+        self.assertEqual(list(out["isTool"]), ["Y", "Y", "N", "N"])
+        self.assertEqual(list(out["isKit"]), ["N", "N", "Y", "Y"])
+
+    def test_template_parts_populates_altsgen_fields_from_evidence(self) -> None:
+        parts = pd.DataFrame({"ItemNo": ["A1", "B2", "C3"], "ItemDescription": ["Drive", "Board", "Battery"]})
+        altsgen = pd.DataFrame(
+            {
+                "PartNumber": ["A1", "B2", "C3"],
+                "status": ["ok", "ok", "error"],
+                "partType": ["hdd_sas_2_5_sff", "laptop_motherboard", "laptop_battery"],
+                "canonicalDescription": ["2.5 inch HDD", "Fujitsu Laptop Motherboard", "Laptop Battery"],
+            }
+        )
+
+        out = build_template_parts(
+            parts,
+            ["PartNumber", "productClass", "productType", "partType"],
+            altsgen_evidence=altsgen,
+        )
 
         self.assertEqual(out.loc[0, "partType"], "hdd_sas_2_5_sff")
-        self.assertEqual(out.loc[1, "partType"], "")
+        self.assertEqual(out.loc[0, "productType"], "2.5 inch HDD")
+        self.assertEqual(out.loc[0, "productClass"], "STORAGE")
+        self.assertEqual(out.loc[1, "productType"], "Fujitsu Laptop Motherboard")
+        self.assertEqual(out.loc[1, "productClass"], "BOARD")
+        self.assertEqual(out.loc[2, "partType"], "")
+        self.assertEqual(out.loc[2, "productType"], "")
 
     def test_template_parts_usage_uses_negative_dn_rows_only(self) -> None:
         usage = pd.DataFrame(
@@ -653,7 +713,7 @@ class OnboardingCsvTests(unittest.TestCase):
         self.assertEqual(len(out), 1)
         self.assertEqual(out.loc[0, "partType"], "hdd_sas_2_5_sff")
         self.assertEqual(out.loc[0, "partTypeDescription"], "Duplicate")
-        self.assertEqual(out.loc[0, "isReworkable"], "")
+        self.assertEqual(out.loc[0, "isReworkable"], "NO")
 
     def test_validation_flags_missing_confirmed_csv_columns(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

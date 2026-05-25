@@ -16,7 +16,7 @@ from dotenv import dotenv_values
 
 from planning_v2.config import get_config
 from planning_v2.onboarding_csvs import build_template_part_types
-from planning_v2.onboarding_csvs import _part_type_lookup
+from planning_v2.onboarding_csvs import _canonical_description_lookup, _kit_flags, _part_type_lookup, _product_class_lookup, _tool_flags
 from planning_v2.template_specs import template_columns
 
 
@@ -226,6 +226,7 @@ def _evidence_row(
         "status": status,
         "partType": commodity_type,
         "partTypeDescription": _description_from_result(result, commodity_type),
+        "canonicalDescription": _clean_text(result.get("canonical_description")),
         "isReworkable": "",
         "altsgenMode": "live_api" if status == "ok" else "",
         "altsgenConfidence": _confidence_from_attributes(attributes),
@@ -273,6 +274,21 @@ def _refresh_parts_csv_part_types(parts_csv: Path, evidence: pd.DataFrame) -> in
     )
     changed = int(changed_mask.sum())
     parts["partType"] = parts["partType"].where(mapped.astype(str).str.strip().eq(""), mapped)
+    if "productType" in parts.columns:
+        type_lookup = _canonical_description_lookup(evidence)
+        type_mapped = parts["PartNumber"].map(_clean_text).map(type_lookup).fillna("")
+        parts["productType"] = parts["productType"].where(type_mapped.astype(str).str.strip().eq(""), type_mapped)
+    if "productClass" in parts.columns:
+        class_lookup = _product_class_lookup(evidence)
+        class_mapped = parts["PartNumber"].map(_clean_text).map(class_lookup).fillna("")
+        parts["productClass"] = parts["productClass"].where(class_mapped.astype(str).str.strip().eq(""), class_mapped)
+    if "isKit" in parts.columns:
+        description = parts["description"] if "description" in parts.columns else pd.Series([""] * len(parts), index=parts.index)
+        product_type = parts["productType"] if "productType" in parts.columns else pd.Series([""] * len(parts), index=parts.index)
+        part_type = parts["partType"] if "partType" in parts.columns else pd.Series([""] * len(parts), index=parts.index)
+        parts["isKit"] = _kit_flags(description, product_type, part_type)
+    if "isTool" in parts.columns:
+        parts["isTool"] = _tool_flags(parts["PartNumber"])
     parts.to_csv(parts_csv, index=False, encoding="utf-8-sig")
     return changed
 
