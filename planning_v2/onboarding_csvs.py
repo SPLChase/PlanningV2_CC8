@@ -69,7 +69,7 @@ POPULATED_TEMPLATE_FIELDS = {
         "isActive": "SAP Service Layer SQLQueries:OCRD.validFor joined from PO vendor",
     },
     "Customers": {
-        "customerId": "Left blank for now. SAP Delivery Notes use CardCode FTS002 for CoCre8; downstream customer/site names appear in remarks/addresses but no SAP end-customer ID has been proven.",
+        "customerId": "Generated stable CC8CUST-* id from normalized downstream customer name because SAP Delivery Notes use CardCode FTS002 for CoCre8, not the end customer.",
         "customerName": "HelpDesk issue tracker: distinct Customer values",
         "Description": "HelpDesk issue tracker: distinct Customer values when the raw template uses Description",
         "assignAnySkill": "Business rule: Y for HelpDesk-derived customer draft",
@@ -159,6 +159,8 @@ OUT_OF_SCOPE_TEMPLATE_FIELDS = {
     ("WarehouseStockOnHand", "inventoryType"),
     ("WarehouseStockOnHand", "quantityOutbound"),
     ("Customers", "customerGroupId"),
+    ("Customers", "dseSlaCost"),
+    ("Customers", "dseSlaRevenue"),
 }
 
 ROW_REQUIRED_TEMPLATE_FIELDS = {
@@ -1720,7 +1722,11 @@ def build_template_customers(
 
     out = _blank_template(columns, len(source))
     if "customerId" in out.columns:
-        out["customerId"] = _col(source, "CustomerCode")
+        customer_code = _col(source, "CustomerCode")
+        out["customerId"] = customer_code.where(
+            customer_code.astype(str).str.strip().ne(""),
+            _col(source, "CustomerName").map(_generated_customer_id),
+        )
     if "Description" in out.columns:
         out["Description"] = _col(source, "CustomerName")
     if "customerName" in out.columns:
@@ -1876,6 +1882,13 @@ def _clean_customer_name(value: object) -> str:
     if upper in blocked or upper.startswith("BASED ON SALES"):
         return ""
     return text
+
+
+def _generated_customer_id(value: object) -> str:
+    key = _customer_match_key(value)
+    if not key:
+        return ""
+    return f"CC8CUST-{zlib.crc32(key.encode('utf-8')) & 0xFFFFFFFF:08X}"
 
 
 def _sla_summary_from_values(values: pd.Series) -> tuple[str, str, str]:

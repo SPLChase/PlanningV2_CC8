@@ -28,7 +28,7 @@ from planning_v2.schemas import CONFIRMED_OUTPUT_OBJECTS, PENDING_OUTPUT_OBJECTS
 
 
 class OnboardingCsvTests(unittest.TestCase):
-    def test_template_customers_uses_helpdesk_customer_names_with_blank_sap_id(self) -> None:
+    def test_template_customers_uses_helpdesk_customer_names_with_generated_ids(self) -> None:
         issue_tracker = pd.DataFrame(
             {
                 "Customer": ["Sanlam", "SANLAM", "Massmart", ""],
@@ -42,7 +42,7 @@ class OnboardingCsvTests(unittest.TestCase):
         )
 
         self.assertEqual(list(out["customerName"]), ["Massmart", "Sanlam"])
-        self.assertEqual(list(out["customerId"]), ["", ""])
+        self.assertEqual(list(out["customerId"]), ["CC8CUST-3CC274F6", "CC8CUST-BD0FB2C0"])
         self.assertEqual(set(out["assignAnySkill"]), {"Y"})
         self.assertEqual(set(out["isActive"]), {"Y"})
 
