@@ -20,6 +20,7 @@ from planning_v2.onboarding_csvs import (
     build_template_inventory_transfers,
     filter_active_warehouses,
     build_stock_detail,
+    parse_customer_sla,
     validate_template_outputs,
     validate_outputs,
 )
@@ -44,6 +45,32 @@ class OnboardingCsvTests(unittest.TestCase):
         self.assertEqual(list(out["customerId"]), ["", ""])
         self.assertEqual(set(out["assignAnySkill"]), {"Y"})
         self.assertEqual(set(out["isActive"]), {"Y"})
+
+    def test_template_customers_populates_sla_hours_from_helpdesk(self) -> None:
+        issue_tracker = pd.DataFrame(
+            {
+                "Customer": ["Massmart", "Massmart", "WCED", "Tracker"],
+                "SLA": ["8 Hours Recovery 24x7", "8h recovery, 24x7", "NBD Response 9x5", "4h Response, 24 x 7"],
+            }
+        )
+
+        out = build_template_customers(
+            pd.DataFrame(),
+            ["customerName", "stdResponseTime", "stdRepairTime"],
+            issue_tracker,
+        )
+
+        by_customer = out.set_index("customerName").to_dict("index")
+        self.assertEqual(by_customer["Massmart"]["stdResponseTime"], "8")
+        self.assertEqual(by_customer["Massmart"]["stdRepairTime"], "8")
+        self.assertEqual(by_customer["WCED"]["stdResponseTime"], "16")
+        self.assertEqual(by_customer["WCED"]["stdRepairTime"], "")
+        self.assertEqual(by_customer["Tracker"]["stdResponseTime"], "4")
+        self.assertEqual(by_customer["Tracker"]["stdRepairTime"], "")
+
+    def test_parse_customer_sla_is_conservative_for_untyped_hours(self) -> None:
+        self.assertEqual(parse_customer_sla("4 hour")["stdResponseTime"], "")
+        self.assertEqual(parse_customer_sla("Low")["stdRepairTime"], "")
 
     def test_stock_detail_numeric_fields_are_coerced(self) -> None:
         inventory = pd.DataFrame(

@@ -50,15 +50,15 @@ WAREHOUSE_TEMPLATE_NOTES = {
 }
 
 CUSTOMER_TEMPLATE_NOTES = {
-    "customerId": "Left blank. SAP BusinessPartners can supply customer codes, but the correct Planning V2 customer scope is not confirmed.",
-    "customerGroupId": "Left blank. User has no confirmed source yet for customer grouping.",
+    "customerId": "Left blank. SAP Delivery Notes use BP CardCode FTS002 for CoCre8; downstream customer names are present in DN remarks/addresses but no downstream SAP customer id is proven.",
+    "customerGroupId": "Out of MVP scope per user feedback.",
     "Description": "Left blank. SAP BusinessPartners can supply names, but the correct Planning V2 customer scope is not confirmed.",
-    "assignAnySkill": "Left blank. User has no confirmed source yet for customer skill assignment rules.",
-    "isActive": "Left blank. User has no confirmed source yet for customer active/inactive status.",
+    "assignAnySkill": "Defaulted to Y for current CoCre8 customer draft.",
+    "isActive": "Defaulted to Y for current CoCre8 customer draft.",
     "dseSlaCost": "Left blank. User has no confirmed source yet for SLA cost.",
     "dseSlaRevenue": "Left blank. User has no confirmed source yet for SLA revenue.",
-    "stdResponseTime": "Left blank. User has no confirmed source yet for standard response time.",
-    "stdRepairTime": "Left blank. User has no confirmed source yet for standard repair time.",
+    "stdResponseTime": "Parsed from HelpDesk/SAP DN SLA text as numeric hours. NBD is temporarily normalised to 16 business hours pending client confirmation.",
+    "stdRepairTime": "Parsed from HelpDesk/SAP DN Recovery/Repair/Resolve SLA text as numeric hours. NBD is temporarily normalised to 16 business hours pending client confirmation.",
 }
 
 STOCK_ON_HAND_TEMPLATE_NOTES = {

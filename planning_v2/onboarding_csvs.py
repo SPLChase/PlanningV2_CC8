@@ -69,10 +69,13 @@ POPULATED_TEMPLATE_FIELDS = {
         "isActive": "SAP Service Layer SQLQueries:OCRD.validFor joined from PO vendor",
     },
     "Customers": {
+        "customerId": "Left blank for now. SAP Delivery Notes use CardCode FTS002 for CoCre8; downstream customer/site names appear in remarks/addresses but no SAP end-customer ID has been proven.",
         "customerName": "HelpDesk issue tracker: distinct Customer values",
         "Description": "HelpDesk issue tracker: distinct Customer values when the raw template uses Description",
         "assignAnySkill": "Business rule: Y for HelpDesk-derived customer draft",
         "isActive": "Business rule: Y for HelpDesk-derived customer draft",
+        "stdResponseTime": "HelpDesk issue tracker:SLA parsed to numeric hours; NBD treated as 16 business hours pending client confirmation",
+        "stdRepairTime": "HelpDesk issue tracker:SLA parsed to numeric hours for Recovery/Repair/Resolve-type SLAs; NBD treated as 16 business hours pending client confirmation",
     },
     "PartsUsage": {
         "orderNumber": "SAP Service Layer SQLQueries:ODLN.NumAtCard or parsed Call Nr from ODLN.Comments",
@@ -155,6 +158,7 @@ OUT_OF_SCOPE_TEMPLATE_FIELDS = {
     ("Warehouses", "isBootStockable"),
     ("WarehouseStockOnHand", "inventoryType"),
     ("WarehouseStockOnHand", "quantityOutbound"),
+    ("Customers", "customerGroupId"),
 }
 
 ROW_REQUIRED_TEMPLATE_FIELDS = {
@@ -291,7 +295,7 @@ def build_template_outputs(
         elif object_name == "WarehouseStockOnHand":
             outputs[object_name] = build_template_stock_on_hand(inventory, columns, masters)
         elif object_name == "Customers":
-            outputs[object_name] = build_template_customers(customers, columns, issue_tracker)
+            outputs[object_name] = build_template_customers(customers, columns, issue_tracker, usage)
         elif object_name == "Vendors":
             outputs[object_name] = build_template_vendors(
                 purchase_orders if purchase_orders is not None else pd.DataFrame(),
@@ -1396,6 +1400,104 @@ def build_purchase_order_evidence(
     return out
 
 
+def build_customer_evidence(usage: pd.DataFrame, issue_tracker: pd.DataFrame | None) -> pd.DataFrame:
+    columns = [
+        "SapParsedCustomer",
+        "SapCardCode",
+        "SapCardName",
+        "DeliveryNoteRows",
+        "BestHelpDeskCustomerMatch",
+        "HelpDeskRows",
+        "MatchType",
+        "CustomerIdDecision",
+        "StdResponseTime",
+        "StdRepairTime",
+        "SlaEvidence",
+    ]
+    sap_rows = _customer_rows_from_sap_delivery_notes(usage)
+    helpdesk_rows = _customer_rows_from_helpdesk(issue_tracker)
+    if sap_rows.empty and helpdesk_rows.empty:
+        return pd.DataFrame(columns=columns)
+
+    sap_card = pd.DataFrame()
+    if usage is not None and not usage.empty:
+        sap_card = usage.copy()
+        for column in ["CardCode", "CardName", "Comments"]:
+            if column not in sap_card.columns:
+                sap_card[column] = ""
+        sap_card["CustomerName"] = sap_card["Comments"].map(lambda value: _clean_customer_name(_parse_labeled_value(value, r"Customer")))
+        sap_card["CustomerKey"] = sap_card["CustomerName"].map(_customer_match_key)
+        sap_card = sap_card[sap_card["CustomerKey"].astype(str).str.strip().ne("")]
+        if not sap_card.empty:
+            sap_card = (
+                sap_card.groupby("CustomerKey", dropna=False)
+                .agg(
+                    SapCardCode=("CardCode", _most_common_text),
+                    SapCardName=("CardName", _most_common_text),
+                )
+                .reset_index()
+            )
+
+    helpdesk = helpdesk_rows.copy()
+    if not helpdesk.empty:
+        helpdesk["CustomerKey"] = helpdesk["CustomerName"].map(_customer_match_key)
+    rows: list[dict[str, object]] = []
+    all_keys = sorted(
+        set(sap_rows["CustomerName"].map(_customer_match_key) if not sap_rows.empty else [])
+        | set(helpdesk["CustomerKey"] if not helpdesk.empty else [])
+    )
+    sap_by_key = sap_rows.assign(CustomerKey=sap_rows["CustomerName"].map(_customer_match_key)).set_index("CustomerKey") if not sap_rows.empty else pd.DataFrame()
+    hd_by_key = helpdesk.set_index("CustomerKey") if not helpdesk.empty else pd.DataFrame()
+    card_by_key = sap_card.set_index("CustomerKey") if not sap_card.empty else pd.DataFrame()
+    for key in all_keys:
+        sap_match = sap_by_key.loc[key] if key in sap_by_key.index else None
+        hd_match = hd_by_key.loc[key] if key in hd_by_key.index else None
+        card_match = card_by_key.loc[key] if key in card_by_key.index else None
+        sap_customer = _clean_text(sap_match.get("CustomerName")) if sap_match is not None else ""
+        hd_customer = _clean_text(hd_match.get("CustomerName")) if hd_match is not None else ""
+        if sap_customer and hd_customer:
+            match_type = "Exact normalized SAP DN Customer label + HelpDesk Customer"
+        elif sap_customer:
+            match_type = "SAP DN Customer label only"
+        else:
+            match_type = "HelpDesk Customer only"
+        hd_response = _clean_text(hd_match.get("StdResponseTime")) if hd_match is not None else ""
+        hd_repair = _clean_text(hd_match.get("StdRepairTime")) if hd_match is not None else ""
+        hd_sla = _clean_text(hd_match.get("SlaEvidence")) if hd_match is not None else ""
+        sap_response = _clean_text(sap_match.get("StdResponseTime")) if sap_match is not None else ""
+        sap_repair = _clean_text(sap_match.get("StdRepairTime")) if sap_match is not None else ""
+        sap_sla = _clean_text(sap_match.get("SlaEvidence")) if sap_match is not None else ""
+        response = hd_response
+        repair = hd_repair
+        sla = hd_sla
+        if not (response or repair) and (sap_response or sap_repair):
+            response = sap_response
+            repair = sap_repair
+            sla = sap_sla
+        elif not response and sap_match is not None:
+            response = _clean_text(sap_match.get("StdResponseTime"))
+        elif not repair and sap_match is not None:
+            repair = _clean_text(sap_match.get("StdRepairTime"))
+        if not sla:
+            sla = sap_sla
+        rows.append(
+            {
+                "SapParsedCustomer": sap_customer,
+                "SapCardCode": _clean_text(card_match.get("SapCardCode")) if card_match is not None else "",
+                "SapCardName": _clean_text(card_match.get("SapCardName")) if card_match is not None else "",
+                "DeliveryNoteRows": _clean_text(sap_match.get("DeliveryNoteRows")) if sap_match is not None else "",
+                "BestHelpDeskCustomerMatch": hd_customer,
+                "HelpDeskRows": _clean_text(hd_match.get("TicketRows")) if hd_match is not None else "",
+                "MatchType": match_type,
+                "CustomerIdDecision": "No downstream SAP customer ID proven; SAP CardCode is CoCre8 BP, not the end customer.",
+                "StdResponseTime": response,
+                "StdRepairTime": repair,
+                "SlaEvidence": sla,
+            }
+        )
+    return pd.DataFrame(rows, columns=columns)
+
+
 def write_review_evidence(
     evidence_dir: Path,
     usage: pd.DataFrame,
@@ -1412,6 +1514,7 @@ def write_review_evidence(
         (build_purchase_order_evidence(purchase_orders, masters, issue_tracker), evidence_dir / "PurchaseOrders_SPLMaster_Evidence.csv"),
         (purchase_order_reconciliation(purchase_orders, issue_tracker, masters), evidence_dir / "PurchaseOrders_Ticket_Reconciliation.csv"),
         (issue_tracker_evidence_rows(issue_tracker, masters), evidence_dir / "IssueTracker_Line_Evidence.csv"),
+        (build_customer_evidence(usage, issue_tracker), evidence_dir / "Customers_SAP_HelpDesk_Evidence.csv"),
         (
             _part_cost_rows(
                 parts if parts is not None else pd.DataFrame(),
@@ -1607,8 +1710,9 @@ def build_template_customers(
     customers: pd.DataFrame,
     columns: list[str],
     issue_tracker: pd.DataFrame | None = None,
+    usage: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    source = _customer_rows_from_helpdesk(issue_tracker)
+    source = _combined_customer_rows(issue_tracker, usage)
     if source.empty and not customers.empty:
         source = customers[_col(customers, "CustomerCode").astype(str).str.strip().ne("")].copy()
     if source.empty:
@@ -1625,32 +1729,98 @@ def build_template_customers(
         out["assignAnySkill"] = "Y"
     if "isActive" in out.columns:
         out["isActive"] = "Y"
+    if "stdResponseTime" in out.columns:
+        out["stdResponseTime"] = _col(source, "StdResponseTime")
+    if "stdRepairTime" in out.columns:
+        out["stdRepairTime"] = _col(source, "StdRepairTime")
 
     subset = ["customerId"] if "customerId" in out.columns and out["customerId"].astype(str).str.strip().ne("").any() else ["customerName"]
     return out.drop_duplicates(subset=subset, keep="first").reset_index(drop=True)
 
 
+def _combined_customer_rows(issue_tracker: pd.DataFrame | None, usage: pd.DataFrame | None = None) -> pd.DataFrame:
+    helpdesk = _customer_rows_from_helpdesk(issue_tracker)
+    sap = _customer_rows_from_sap_delivery_notes(usage)
+    frames = [frame for frame in [helpdesk, sap] if frame is not None and not frame.empty]
+    if not frames:
+        return pd.DataFrame(columns=["CustomerCode", "CustomerName", "TicketRows", "StdResponseTime", "StdRepairTime"])
+    combined = pd.concat(frames, ignore_index=True, sort=False).fillna("")
+    combined["CustomerKey"] = combined["CustomerName"].map(_customer_match_key)
+    combined = combined[combined["CustomerKey"].astype(str).str.strip().ne("")]
+    if combined.empty:
+        return pd.DataFrame(columns=["CustomerCode", "CustomerName", "TicketRows", "StdResponseTime", "StdRepairTime"])
+
+    rows: list[dict[str, object]] = []
+    for _, group in combined.groupby("CustomerKey", sort=False):
+        response, repair, evidence = _select_combined_sla(group)
+        rows.append(
+            {
+                "CustomerCode": "",
+                "CustomerName": _most_common_text(group["CustomerName"]),
+                "TicketRows": int(_to_number(_col(group, "TicketRows")).sum()),
+                "DeliveryNoteRows": int(_to_number(_col(group, "DeliveryNoteRows")).sum()),
+                "StdResponseTime": response,
+                "StdRepairTime": repair,
+                "SlaEvidence": evidence,
+            }
+        )
+    return pd.DataFrame(rows).sort_values(["CustomerName"], key=lambda col: col.str.lower()).reset_index(drop=True)
+
+
 def _customer_rows_from_helpdesk(issue_tracker: pd.DataFrame | None) -> pd.DataFrame:
     if issue_tracker is None or issue_tracker.empty or "Customer" not in issue_tracker.columns:
-        return pd.DataFrame(columns=["CustomerCode", "CustomerName", "TicketRows"])
+        return pd.DataFrame(columns=["CustomerCode", "CustomerName", "TicketRows", "StdResponseTime", "StdRepairTime"])
     work = issue_tracker.copy()
     work["CustomerName"] = work["Customer"].map(_clean_text)
     work = work[work["CustomerName"].str.strip().ne("")].copy()
     if work.empty:
-        return pd.DataFrame(columns=["CustomerCode", "CustomerName", "TicketRows"])
+        return pd.DataFrame(columns=["CustomerCode", "CustomerName", "TicketRows", "StdResponseTime", "StdRepairTime"])
 
-    work["CustomerKey"] = work["CustomerName"].str.upper().str.replace(r"\s+", " ", regex=True).str.strip()
-    grouped = (
-        work.groupby("CustomerKey", dropna=False)
-        .agg(
-            CustomerName=("CustomerName", _most_common_text),
-            TicketRows=("CustomerName", "size"),
+    work["CustomerKey"] = work["CustomerName"].map(_customer_match_key)
+    rows: list[dict[str, object]] = []
+    for _, group in work.groupby("CustomerKey", dropna=False):
+        response, repair, evidence = _sla_summary_from_values(_col(group, "SLA"))
+        rows.append(
+            {
+                "CustomerName": _most_common_text(group["CustomerName"]),
+                "TicketRows": len(group),
+                "StdResponseTime": response,
+                "StdRepairTime": repair,
+                "SlaEvidence": evidence,
+            }
         )
-        .reset_index(drop=True)
-        .sort_values(["CustomerName"], key=lambda col: col.str.lower())
-    )
+    grouped = pd.DataFrame(rows).sort_values(["CustomerName"], key=lambda col: col.str.lower())
     grouped["CustomerCode"] = ""
-    return grouped[["CustomerCode", "CustomerName", "TicketRows"]].reset_index(drop=True)
+    return grouped[["CustomerCode", "CustomerName", "TicketRows", "StdResponseTime", "StdRepairTime", "SlaEvidence"]].reset_index(drop=True)
+
+
+def _customer_rows_from_sap_delivery_notes(usage: pd.DataFrame | None) -> pd.DataFrame:
+    columns = ["CustomerCode", "CustomerName", "DeliveryNoteRows", "StdResponseTime", "StdRepairTime", "SlaEvidence"]
+    if usage is None or usage.empty or "Comments" not in usage.columns:
+        return pd.DataFrame(columns=columns)
+    work = usage.copy()
+    work["CustomerName"] = work["Comments"].map(lambda value: _clean_customer_name(_parse_labeled_value(value, r"Customer")))
+    work = work[work["CustomerName"].astype(str).str.strip().ne("")].copy()
+    if work.empty:
+        return pd.DataFrame(columns=columns)
+    work["CustomerKey"] = work["CustomerName"].map(_customer_match_key)
+    work = work[work["CustomerKey"].astype(str).str.strip().ne("")]
+    work["SlaRaw"] = work["Comments"].map(lambda value: _parse_labeled_value(value, r"SLA"))
+    rows: list[dict[str, object]] = []
+    for _, group in work.groupby("CustomerKey", dropna=False):
+        response, repair, evidence = _sla_summary_from_values(group["SlaRaw"])
+        rows.append(
+            {
+                "CustomerName": _most_common_text(group["CustomerName"]),
+                "DeliveryNoteRows": len(group),
+                "StdResponseTime": response,
+                "StdRepairTime": repair,
+                "SlaEvidence": evidence,
+            }
+        )
+    grouped = pd.DataFrame(rows).sort_values(["CustomerName"], key=lambda col: col.str.lower())
+    grouped["CustomerCode"] = ""
+    return grouped[columns].reset_index(drop=True)
 
 
 def _most_common_text(values: pd.Series) -> str:
@@ -1659,6 +1829,138 @@ def _most_common_text(values: pd.Series) -> str:
     if cleaned.empty:
         return ""
     return str(cleaned.value_counts().idxmax())
+
+
+def _most_common_nonblank(values: pd.Series) -> str:
+    cleaned = values.map(_clean_text)
+    cleaned = cleaned[cleaned.str.strip().ne("")]
+    if cleaned.empty:
+        return ""
+    return str(cleaned.value_counts().idxmax())
+
+
+def _customer_match_key(value: object) -> str:
+    text = _clean_text(value).upper()
+    text = text.replace("&", " AND ")
+    text = re.sub(r"[^A-Z0-9]+", " ", text)
+    aliases = {
+        "WCED": "WESTERN CAPE EDUCATION DEPARTMENT",
+        "IEC": "INDEPENDENT ELECTORAL COMMISSION",
+        "DALRRD": "DEPARTMENT OF AGRICULTURE LAND REFORM AND RURAL DEVELOPMENT",
+        "DEDEAT": "DEPARTMENT OF ECONOMIC DEVELOPMENT ENVIRONMENTAL AFFAIRS AND TOURISM",
+        "E C DOE": "EASTERN CAPE DOE",
+        "EC DOE": "EASTERN CAPE DOE",
+        "CO CRE8": "COCRE8",
+    }
+    text = re.sub(r"\s+", " ", text).strip()
+    return aliases.get(text, text)
+
+
+def _clean_customer_name(value: object) -> str:
+    text = _clean_extracted_value(value)
+    text = re.sub(r"\bBased On Sales.*$", "", text, flags=re.IGNORECASE).strip()
+    text = re.sub(r"\bBased$", "", text, flags=re.IGNORECASE).strip()
+    text = text.strip(" :;,-")
+    if not text:
+        return ""
+    upper = text.upper()
+    blocked = {
+        "N/A",
+        "NA",
+        "BASED",
+        "BASED ON SALES",
+        "BASED ON SALES ORDER",
+        "BASED ON SALES ORDERS",
+        "BOOK TO COCRE8",
+    }
+    if upper in blocked or upper.startswith("BASED ON SALES"):
+        return ""
+    return text
+
+
+def _sla_summary_from_values(values: pd.Series) -> tuple[str, str, str]:
+    parsed = [parse_customer_sla(value) for value in values]
+    with_times = [
+        item
+        for item in parsed
+        if _clean_text(item["stdResponseTime"]) or _clean_text(item["stdRepairTime"])
+    ]
+    candidates = with_times or [item for item in parsed if _clean_text(item["normalizedSla"])]
+    if not candidates:
+        return "", "", ""
+    ranked = pd.DataFrame(candidates)
+    ranked["Key"] = (
+        ranked["stdResponseTime"].astype(str)
+        + "|"
+        + ranked["stdRepairTime"].astype(str)
+        + "|"
+        + ranked["normalizedSla"].astype(str)
+    )
+    selected_key = ranked["Key"].value_counts().idxmax()
+    selected = ranked[ranked["Key"].eq(selected_key)].iloc[0]
+    return (
+        _clean_text(selected["stdResponseTime"]),
+        _clean_text(selected["stdRepairTime"]),
+        _clean_text(selected["normalizedSla"]),
+    )
+
+
+def _select_combined_sla(group: pd.DataFrame) -> tuple[str, str, str]:
+    for _, row in group.iterrows():
+        response = _clean_text(row.get("StdResponseTime"))
+        repair = _clean_text(row.get("StdRepairTime"))
+        evidence = _clean_text(row.get("SlaEvidence"))
+        if response or repair:
+            return response, repair, evidence
+    evidence = _most_common_nonblank(group.get("SlaEvidence", pd.Series(dtype=str)))
+    return "", "", evidence
+
+
+def parse_customer_sla(value: object) -> dict[str, str]:
+    """Parse HelpDesk/DN SLA text to numeric-hour customer template fields.
+
+    The Planning data dictionary marks the standard response/repair columns as
+    Float. We therefore store hours rather than text labels.
+    """
+
+    raw = _clean_text(value)
+    if not raw:
+        return {"stdResponseTime": "", "stdRepairTime": "", "normalizedSla": ""}
+    text = raw.upper().replace("*", "X")
+    text = re.sub(r"BASED ON SALES.*$", "", text)
+    text = re.sub(r"\bTMS\b", " ", text)
+    text = re.sub(r"\s+", " ", text).strip(" ,.;:-")
+    if not text or text in {"N/A", "NA", "LOW"}:
+        return {"stdResponseTime": "", "stdRepairTime": "", "normalizedSla": text}
+
+    hours = ""
+    if re.search(r"\bNBD\b|\bNEXT BUSINESS DAY\b|\bNBS\b", text):
+        hours = "16"
+    else:
+        match = re.search(r"\b(\d+(?:\.\d+)?)\s*(?:HOURS?|HRS?|HR|H)\b", text)
+        if match:
+            hours = _format_float(match.group(1))
+
+    if not hours:
+        return {"stdResponseTime": "", "stdRepairTime": "", "normalizedSla": text}
+
+    is_recovery = bool(re.search(r"\b(RECOVERY|RECOVER|REPAIR|RESOLVE|RESOLUTION|RECOV|REC)\b", text))
+    is_response = bool(re.search(r"\b(RESPONSE|RESPOND|RESP|RESPON)\b", text))
+    if is_recovery:
+        return {"stdResponseTime": hours, "stdRepairTime": hours, "normalizedSla": text}
+    if is_response:
+        return {"stdResponseTime": hours, "stdRepairTime": "", "normalizedSla": text}
+    return {"stdResponseTime": "", "stdRepairTime": "", "normalizedSla": text}
+
+
+def _format_float(value: object) -> str:
+    number = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    if pd.isna(number):
+        return ""
+    as_float = float(number)
+    if as_float.is_integer():
+        return str(int(as_float))
+    return f"{as_float:g}"
 
 
 def validate_template_outputs(
