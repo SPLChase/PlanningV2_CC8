@@ -13,6 +13,7 @@ from planning_v2.onboarding_csvs import (
     build_template_parts_usage,
     build_template_parts_usage_from_issue_tracker,
     build_template_purchase_orders,
+    build_template_addresses,
     build_template_customers,
     build_template_warehouses,
     build_template_stock_on_hand,
@@ -71,6 +72,71 @@ class OnboardingCsvTests(unittest.TestCase):
     def test_parse_customer_sla_is_conservative_for_untyped_hours(self) -> None:
         self.assertEqual(parse_customer_sla("4 hour")["stdResponseTime"], "")
         self.assertEqual(parse_customer_sla("Low")["stdRepairTime"], "")
+
+    def test_template_addresses_uses_sap_ship_to_and_generated_customer_id(self) -> None:
+        usage = pd.DataFrame(
+            {
+                "Comments": ["Customer: Massmart\rSLA: 8h recovery, 24x7"],
+                "CustomerRefNumber": ["77544562"],
+                "ShipToCode": ["CoCre8 Technology Solutions"],
+                "ShipToAddress": ["Kelvin to collect\r\r\rSOUTH AFRICA"],
+                "WarehouseCode": ["FUJMSM C"],
+            }
+        )
+        warehouse_locations = pd.DataFrame(
+            {
+                "WarehouseCode": ["FUJMSM C"],
+                "Location": ["CPT"],
+                "WarehouseName": ["MASSMART - CPT - SPL"],
+            }
+        )
+
+        out = build_template_addresses(
+            usage,
+            [
+                "externalAddressId",
+                "customerExternalId",
+                "6,0",
+                "addressLine2",
+                "addressLine3",
+                "city",
+                "stateProvince",
+                "countryCode",
+                "latitude",
+                "longitude",
+                "timeZone",
+                "nodeId",
+            ],
+            warehouse_locations,
+        )
+
+        self.assertEqual(len(out), 1)
+        self.assertTrue(out.loc[0, "externalAddressId"].startswith("CC8ADDR-"))
+        self.assertEqual(out.loc[0, "customerExternalId"], "CC8CUST-3CC274F6")
+        self.assertEqual(out.loc[0, "6,0"], "")
+        self.assertEqual(out.loc[0, "addressLine2"], "Kelvin to collect")
+        self.assertEqual(out.loc[0, "city"], "Cape Town")
+        self.assertEqual(out.loc[0, "stateProvince"], "Western Cape")
+        self.assertEqual(out.loc[0, "countryCode"], "ZA")
+        self.assertEqual(out.loc[0, "timeZone"], "South Africa Standard Time")
+        self.assertEqual(out.loc[0, "nodeId"], "")
+
+    def test_template_addresses_marks_rssc_as_swaziland(self) -> None:
+        usage = pd.DataFrame(
+            {
+                "Comments": ["Customer: Royal Eswatini Sugar Corporation"],
+                "CustomerRefNumber": ["S_1"],
+                "ShipToCode": [""],
+                "ShipToAddress": ["Royal Eswatini Sugar Corporation (RSSC)\rSimunye - New IT Offices\rEswatini"],
+                "WarehouseCode": ["FUJ RSSC"],
+            }
+        )
+
+        out = build_template_addresses(usage, ["customerExternalId", "city", "stateProvince", "countryCode", "latitude", "longitude"])
+
+        self.assertEqual(out.loc[0, "city"], "Simunye")
+        self.assertEqual(out.loc[0, "stateProvince"], "Lubombo")
+        self.assertEqual(out.loc[0, "countryCode"], "SZ")
 
     def test_stock_detail_numeric_fields_are_coerced(self) -> None:
         inventory = pd.DataFrame(

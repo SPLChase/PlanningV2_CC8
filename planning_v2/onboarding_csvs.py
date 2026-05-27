@@ -77,6 +77,18 @@ POPULATED_TEMPLATE_FIELDS = {
         "stdResponseTime": "HelpDesk issue tracker:SLA parsed to numeric hours; NBD treated as 16 business hours pending client confirmation",
         "stdRepairTime": "HelpDesk issue tracker:SLA parsed to numeric hours for Recovery/Repair/Resolve-type SLAs; NBD treated as 16 business hours pending client confirmation",
     },
+    "Addresses": {
+        "externalAddressId": "Generated stable CC8ADDR-* id from generated customer id + normalized SAP Delivery Note ShipToAddress",
+        "customerExternalId": "Generated stable CC8CUST-* id matching Customers.customerId",
+        "addressLine2": "SAP Service Layer SQLQueries:ODLN.Address2/ShipToAddress first usable line",
+        "addressLine3": "SAP Service Layer SQLQueries:ODLN.Address2/ShipToAddress remaining usable lines",
+        "city": "SAP DN ShipToAddress city keyword, collection warehouse location, or MinStock/Exco warehouse location map",
+        "stateProvince": "Derived from inferred city/location code",
+        "countryCode": "ZA by default; SZ for Royal Swazi/RSSC/Swazi/Eswatini evidence",
+        "latitude": "City/location-level coordinate estimate",
+        "longitude": "City/location-level coordinate estimate",
+        "timeZone": "South Africa Standard Time",
+    },
     "PartsUsage": {
         "orderNumber": "SAP Service Layer SQLQueries:ODLN.NumAtCard or parsed Call Nr from ODLN.Comments",
         "requestId": "SAP Service Layer SQLQueries:ODLN.NumAtCard or parsed Call Nr from ODLN.Comments",
@@ -161,6 +173,8 @@ OUT_OF_SCOPE_TEMPLATE_FIELDS = {
     ("Customers", "customerGroupId"),
     ("Customers", "dseSlaCost"),
     ("Customers", "dseSlaRevenue"),
+    ("Addresses", "6,0"),
+    ("Addresses", "nodeId"),
 }
 
 ROW_REQUIRED_TEMPLATE_FIELDS = {
@@ -172,6 +186,37 @@ def _read_csv(path: Path) -> pd.DataFrame:
     if not path.exists():
         return pd.DataFrame()
     return pd.read_csv(path, dtype=str, encoding="utf-8-sig").fillna("")
+
+
+def read_warehouse_location_lookup(cfg: PlanningConfig) -> pd.DataFrame:
+    paths = [
+        cfg.minstock3_dir / "customers.csv",
+        cfg.exco_source_dir / "warehouse_dimension.csv",
+        cfg.exco_source_dir / "FactWarehouses.csv",
+    ]
+    frames: list[pd.DataFrame] = []
+    for path in paths:
+        frame = _read_csv(path)
+        if frame.empty:
+            continue
+        warehouse = _first_col(frame, ["WarehouseCode", "Warehouse Code", "warehouseCode"])
+        location = _first_col(frame, ["Location", "LocationKey", "location"])
+        name = _first_col(frame, ["WarehouseName", "Warehouse Name", "warehouseDescription"], "")
+        out = pd.DataFrame(
+            {
+                "WarehouseCode": warehouse.map(_clean_text),
+                "Location": location.map(_clean_text),
+                "WarehouseName": name.map(_clean_text),
+            }
+        )
+        out = out[out["WarehouseCode"].astype(str).str.strip().ne("")]
+        if not out.empty:
+            frames.append(out)
+    if not frames:
+        return pd.DataFrame(columns=["WarehouseCode", "Location", "WarehouseName"])
+    combined = pd.concat(frames, ignore_index=True, sort=False).fillna("")
+    combined["WarehouseKey"] = combined["WarehouseCode"].str.upper().str.strip()
+    return combined.drop_duplicates(subset=["WarehouseKey"], keep="first").reset_index(drop=True)
 
 
 def _write_csv(df: pd.DataFrame, path: Path) -> Path:
@@ -231,6 +276,7 @@ def generate_onboarding_csvs(cfg: PlanningConfig, out_dir: Path) -> list[Path]:
     combined_spi_costs = _combine_spi_cost_sources(spi, spi_cost_history)
     issue_tracker = read_issue_tracker(cfg.issue_tracker_csv)
     manual_warehouses = read_manual_warehouse_fill(cfg)
+    warehouse_locations = read_warehouse_location_lookup(cfg)
     altsgen_part_type_evidence = _read_csv(out_dir.parent / "review_evidence" / "Altsgen_PartType_Evidence.csv")
 
     written: list[Path] = []
@@ -250,6 +296,7 @@ def generate_onboarding_csvs(cfg: PlanningConfig, out_dir: Path) -> list[Path]:
         manual_warehouses,
         spi_cost_history,
         altsgen_part_type_evidence,
+        warehouse_locations,
     )
 
     for object_name, df in outputs.items():
@@ -287,6 +334,7 @@ def build_template_outputs(
     manual_warehouses: pd.DataFrame | None = None,
     spi_cost_history: pd.DataFrame | None = None,
     altsgen_part_type_evidence: pd.DataFrame | None = None,
+    warehouse_locations: pd.DataFrame | None = None,
 ) -> dict[str, pd.DataFrame]:
     outputs: dict[str, pd.DataFrame] = {}
     for object_name, columns in templates.items():
@@ -298,6 +346,8 @@ def build_template_outputs(
             outputs[object_name] = build_template_stock_on_hand(inventory, columns, masters)
         elif object_name == "Customers":
             outputs[object_name] = build_template_customers(customers, columns, issue_tracker, usage)
+        elif object_name == "Addresses":
+            outputs[object_name] = build_template_addresses(usage, columns, warehouse_locations)
         elif object_name == "Vendors":
             outputs[object_name] = build_template_vendors(
                 purchase_orders if purchase_orders is not None else pd.DataFrame(),
@@ -1742,6 +1792,278 @@ def build_template_customers(
 
     subset = ["customerId"] if "customerId" in out.columns and out["customerId"].astype(str).str.strip().ne("").any() else ["customerName"]
     return out.drop_duplicates(subset=subset, keep="first").reset_index(drop=True)
+
+
+def build_template_addresses(
+    usage: pd.DataFrame,
+    columns: list[str],
+    warehouse_locations: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    source = _address_rows_from_sap_delivery_notes(usage, warehouse_locations)
+    if source.empty:
+        return pd.DataFrame(columns=columns)
+    out = _blank_template(columns, len(source))
+    for column in [
+        "externalAddressId",
+        "customerExternalId",
+        "addressLine2",
+        "addressLine3",
+        "city",
+        "stateProvince",
+        "countryCode",
+        "latitude",
+        "longitude",
+        "timeZone",
+    ]:
+        if column in out.columns:
+            out[column] = _col(source, column)
+    if "6,0" in out.columns:
+        out["6,0"] = ""
+    if "nodeId" in out.columns:
+        out["nodeId"] = ""
+    if "externalAddressId" in out.columns:
+        return out.drop_duplicates(subset=["externalAddressId"], keep="first").reset_index(drop=True)
+    return out.drop_duplicates(keep="first").reset_index(drop=True)
+
+
+def _address_rows_from_sap_delivery_notes(
+    usage: pd.DataFrame,
+    warehouse_locations: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    columns = [
+        "externalAddressId",
+        "customerExternalId",
+        "CustomerName",
+        "RawShipToAddress",
+        "addressLine2",
+        "addressLine3",
+        "city",
+        "stateProvince",
+        "countryCode",
+        "latitude",
+        "longitude",
+        "timeZone",
+        "WarehouseCode",
+        "LocationEvidence",
+    ]
+    if usage.empty or "ShipToAddress" not in usage.columns:
+        return pd.DataFrame(columns=columns)
+    work = usage.copy()
+    for column in ["ShipToAddress", "Comments", "CustomerRefNumber", "ShipToCode", "WarehouseCode"]:
+        if column not in work.columns:
+            work[column] = ""
+    work["CustomerName"] = work.apply(_customer_name_from_delivery_note_row, axis=1)
+    work["CustomerExternalId"] = work["CustomerName"].map(_generated_customer_id)
+    work["RawShipToAddress"] = work["ShipToAddress"].map(_clean_address_text)
+    work = work[
+        work["CustomerExternalId"].astype(str).str.strip().ne("")
+        & work["RawShipToAddress"].astype(str).str.strip().ne("")
+    ].copy()
+    if work.empty:
+        return pd.DataFrame(columns=columns)
+
+    work["AddressKey"] = work.apply(
+        lambda row: _generated_address_id(row["CustomerExternalId"], row["RawShipToAddress"]),
+        axis=1,
+    )
+    location_by_warehouse = _warehouse_location_lookup(warehouse_locations)
+    rows: list[dict[str, object]] = []
+    for address_id, group in work.groupby("AddressKey", sort=False):
+        row = group.iloc[0]
+        raw_address = _most_common_text(group["RawShipToAddress"])
+        customer_name = _most_common_text(group["CustomerName"])
+        customer_id = _generated_customer_id(customer_name)
+        address_line2, address_line3 = _address_lines(raw_address)
+        location = _infer_address_location(raw_address, row.get("WarehouseCode"), customer_name, location_by_warehouse)
+        rows.append(
+            {
+                "externalAddressId": address_id,
+                "customerExternalId": customer_id,
+                "CustomerName": customer_name,
+                "RawShipToAddress": raw_address,
+                "addressLine2": address_line2,
+                "addressLine3": address_line3,
+                "city": location["city"],
+                "stateProvince": location["stateProvince"],
+                "countryCode": location["countryCode"],
+                "latitude": location["latitude"],
+                "longitude": location["longitude"],
+                "timeZone": "South Africa Standard Time",
+                "WarehouseCode": _clean_text(row.get("WarehouseCode")),
+                "LocationEvidence": location["evidence"],
+            }
+        )
+    return pd.DataFrame(rows, columns=columns).sort_values(["CustomerName", "externalAddressId"]).reset_index(drop=True)
+
+
+def _customer_name_from_delivery_note_row(row: pd.Series) -> str:
+    customer = _clean_customer_name(_parse_labeled_value(row.get("Comments"), r"Customer"))
+    if customer:
+        return customer
+    reference = _clean_text(row.get("CustomerRefNumber"))
+    match = re.match(r"([A-Za-z][A-Za-z0-9 &.-]{1,30})\s*[:_]", reference)
+    if match:
+        candidate = _clean_customer_name(match.group(1))
+        if candidate and candidate.upper() not in {"S", "W", "WO", "PO", "CALL"}:
+            return candidate
+    return ""
+
+
+def _clean_address_text(value: object) -> str:
+    text = _clean_text(value)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    lines = [_clean_extracted_value(line) for line in text.split("\n")]
+    lines = [line for line in lines if line]
+    return "\n".join(lines)
+
+
+def _address_lines(address: object) -> tuple[str, str]:
+    lines = [_clean_extracted_value(line) for line in _clean_address_text(address).split("\n")]
+    lines = [line for line in lines if line]
+    if not lines:
+        return "", ""
+    line2 = lines[0]
+    line3 = " | ".join(lines[1:])
+    return line2[:255], line3[:255]
+
+
+def _generated_address_id(customer_id: object, address: object) -> str:
+    key = f"{_clean_text(customer_id)}|{_normalised_address_key(address)}"
+    return f"CC8ADDR-{zlib.crc32(key.encode('utf-8')) & 0xFFFFFFFF:08X}"
+
+
+def _normalised_address_key(value: object) -> str:
+    text = _clean_address_text(value).upper()
+    text = re.sub(r"\bSOUTH AFRICA\b", "", text)
+    text = re.sub(r"\bCONTACT(?: PERSON)?\b.*", "", text)
+    text = re.sub(r"\bATT(?:ENTION)?\b.*", "", text)
+    text = re.sub(r"\bCELL\b.*", "", text)
+    text = re.sub(r"\bTEL(?:EPHONE)?\b.*", "", text)
+    text = re.sub(r"[^A-Z0-9]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _warehouse_location_lookup(warehouse_locations: pd.DataFrame | None) -> dict[str, dict[str, str]]:
+    if warehouse_locations is None or warehouse_locations.empty:
+        return {}
+    lookup: dict[str, dict[str, str]] = {}
+    for _, row in warehouse_locations.iterrows():
+        code = _clean_text(row.get("WarehouseCode")).upper()
+        if not code:
+            continue
+        lookup.setdefault(
+            code,
+            {
+                "Location": _clean_text(row.get("Location")).upper(),
+                "WarehouseName": _clean_text(row.get("WarehouseName")),
+            },
+        )
+    return lookup
+
+
+CITY_LOCATION_RULES = [
+    ("MBABANE", "Mbabane", "Hhohho", "SZ", "-26.3054", "31.1367"),
+    ("SIMUNYE", "Simunye", "Lubombo", "SZ", "-26.2070", "31.9270"),
+    ("SWAZI", "Mbabane", "Hhohho", "SZ", "-26.3054", "31.1367"),
+    ("ESWATINI", "Mbabane", "Hhohho", "SZ", "-26.3054", "31.1367"),
+    ("CAPE TOWN", "Cape Town", "Western Cape", "ZA", "-33.9249", "18.4241"),
+    ("MONTAGUE GARDENS", "Cape Town", "Western Cape", "ZA", "-33.8616", "18.5204"),
+    ("CPT", "Cape Town", "Western Cape", "ZA", "-33.9249", "18.4241"),
+    ("JOHANNESBURG", "Johannesburg", "Gauteng", "ZA", "-26.2041", "28.0473"),
+    ("MIDRAND", "Johannesburg", "Gauteng", "ZA", "-26.0167", "28.1250"),
+    ("JHB", "Johannesburg", "Gauteng", "ZA", "-26.2041", "28.0473"),
+    ("PRETORIA", "Pretoria", "Gauteng", "ZA", "-25.7479", "28.2293"),
+    ("DURBAN", "Durban", "KwaZulu-Natal", "ZA", "-29.8587", "31.0218"),
+    ("KZN", "Durban", "KwaZulu-Natal", "ZA", "-29.8587", "31.0218"),
+    ("EAST LONDON", "East London", "Eastern Cape", "ZA", "-33.0292", "27.8546"),
+    ("PORT ELIZABETH", "Port Elizabeth", "Eastern Cape", "ZA", "-33.9608", "25.6022"),
+    ("GQEBERHA", "Port Elizabeth", "Eastern Cape", "ZA", "-33.9608", "25.6022"),
+    ("MTHATHA", "Mthatha", "Eastern Cape", "ZA", "-31.5889", "28.7844"),
+    ("ZWELITSHA", "Zwelitsha", "Eastern Cape", "ZA", "-32.9000", "27.4333"),
+    ("EC", "East London", "Eastern Cape", "ZA", "-33.0292", "27.8546"),
+    ("BLOEMFONTEIN", "Bloemfontein", "Free State", "ZA", "-29.0852", "26.1596"),
+    ("NELSPRUIT", "Nelspruit", "Mpumalanga", "ZA", "-25.4753", "30.9694"),
+    ("MBOMBELA", "Nelspruit", "Mpumalanga", "ZA", "-25.4753", "30.9694"),
+    ("MIDDELBURG", "Middelburg", "Mpumalanga", "ZA", "-25.7751", "29.4648"),
+    ("POLOKWANE", "Polokwane", "Limpopo", "ZA", "-23.9045", "29.4689"),
+    ("POTCHEFSTROOM", "Potchefstroom", "North West", "ZA", "-26.7153", "27.0970"),
+    ("GEORGE", "George", "Western Cape", "ZA", "-33.9648", "22.4617"),
+    ("MOSSELBAY", "Mossel Bay", "Western Cape", "ZA", "-34.1831", "22.1460"),
+    ("MOSSEL BAY", "Mossel Bay", "Western Cape", "ZA", "-34.1831", "22.1460"),
+    ("NORTHERN CAPE", "Kimberley", "Northern Cape", "ZA", "-28.7282", "24.7499"),
+    ("NC", "Kimberley", "Northern Cape", "ZA", "-28.7282", "24.7499"),
+]
+
+
+LOCATION_CODE_RULES = {
+    "JHB": ("Johannesburg", "Gauteng", "ZA", "-26.2041", "28.0473"),
+    "CPT": ("Cape Town", "Western Cape", "ZA", "-33.9249", "18.4241"),
+    "KZN": ("Durban", "KwaZulu-Natal", "ZA", "-29.8587", "31.0218"),
+    "EC": ("East London", "Eastern Cape", "ZA", "-33.0292", "27.8546"),
+    "NC": ("Kimberley", "Northern Cape", "ZA", "-28.7282", "24.7499"),
+    "SWAZI": ("Mbabane", "Hhohho", "SZ", "-26.3054", "31.1367"),
+    "TBI": ("Johannesburg", "Gauteng", "ZA", "-26.2041", "28.0473"),
+}
+
+
+def _infer_address_location(
+    address: object,
+    warehouse_code: object,
+    customer_name: object,
+    warehouse_lookup: dict[str, dict[str, str]],
+) -> dict[str, str]:
+    address_text = _clean_address_text(address)
+    combined = f"{address_text}\n{_clean_text(customer_name)}\n{_clean_text(warehouse_code)}".upper()
+    warehouse_key = _clean_text(warehouse_code).upper()
+    warehouse = warehouse_lookup.get(warehouse_key, {})
+
+    if re.search(r"\b(RSSC|ROYAL ESWATINI|ROYAL SWAZI|SWAZI|ESWATINI)\b", combined):
+        city, state, country, lat, lon = LOCATION_CODE_RULES["SWAZI"]
+        if "SIMUNYE" in combined:
+            city, state, country, lat, lon = "Simunye", "Lubombo", "SZ", "-26.2070", "31.9270"
+        return _location_result(city, state, country, lat, lon, "Swazi/RSSC/Eswatini keyword")
+
+    if _is_collection_address(address_text) and warehouse:
+        return _location_from_code(warehouse.get("Location"), f"collection warehouse {warehouse_key}")
+
+    if "SANLAM" in combined:
+        return _location_from_code("CPT", "Sanlam default to Cape Town")
+
+    if "MASSMART" in combined:
+        if re.search(r"\b(CPT|CAPE TOWN|FUJMSM C)\b", combined):
+            return _location_from_code("CPT", "Massmart Cape Town keyword")
+        return _location_from_code("JHB", "Massmart default to Johannesburg")
+
+    for token, city, state, country, lat, lon in CITY_LOCATION_RULES:
+        if re.search(rf"\b{re.escape(token)}\b", combined):
+            return _location_result(city, state, country, lat, lon, f"address keyword {token}")
+
+    if warehouse:
+        return _location_from_code(warehouse.get("Location"), f"warehouse {warehouse_key}")
+
+    return _location_result("Johannesburg", "Gauteng", "ZA", "-26.2041", "28.0473", "default ZA/Johannesburg")
+
+
+def _is_collection_address(address: object) -> bool:
+    text = _clean_text(address).upper()
+    return bool(re.search(r"\b(COLLECT|COLLECTION|TO COLLECT|KELVIN)\b", text))
+
+
+def _location_from_code(location_code: object, evidence: str) -> dict[str, str]:
+    code = _clean_text(location_code).upper()
+    city, state, country, lat, lon = LOCATION_CODE_RULES.get(code, LOCATION_CODE_RULES["JHB"])
+    return _location_result(city, state, country, lat, lon, evidence)
+
+
+def _location_result(city: str, state: str, country: str, latitude: str, longitude: str, evidence: str) -> dict[str, str]:
+    return {
+        "city": city,
+        "stateProvince": state,
+        "countryCode": country,
+        "latitude": latitude,
+        "longitude": longitude,
+        "evidence": evidence,
+    }
 
 
 def _combined_customer_rows(issue_tracker: pd.DataFrame | None, usage: pd.DataFrame | None = None) -> pd.DataFrame:

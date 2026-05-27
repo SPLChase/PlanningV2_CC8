@@ -84,6 +84,8 @@ TEMPLATE_FIELDS_NOT_CC8_RELEVANT = {
     ("PurchaseOrders", "customerId"): "No corresponding purchase_orders field is marked needed for CoCre8 in the edited reference workbook.",
     ("PurchaseOrders", "requestTicketDateTime"): "No corresponding purchase_orders field is marked needed for CoCre8 in the edited reference workbook.",
     ("PurchaseOrders", "isResolved"): "No corresponding purchase_orders field is marked needed for CoCre8 in the edited reference workbook.",
+    ("Addresses", "6,0"): "Broken sample-template header; user confirmed it should be excluded.",
+    ("Addresses", "nodeId"): "Nodes are excluded from MVP per Chris/user feedback.",
     ("Warehouses", "nodeId"): "warehouse.node_id is marked CC8 relevant = No.",
     ("Warehouses", "isRepairWarehouse"): "warehouse.is_repair_whse is marked CC8 relevant = No.",
     ("Warehouses", "isBootStockable"): "warehouse.cst_boot_stockable is marked CC8 relevant = No.",
