@@ -62,6 +62,18 @@ def _env_bool(name: str, default: bool) -> bool:
     sys.exit(1)
 
 
+def _default_issue_tracker_csv() -> Path:
+    downloads = Path.home() / "Downloads"
+    candidates = sorted(
+        downloads.glob("CoCre8 Issue Tracker V3.2*.csv"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    if candidates:
+        return candidates[0]
+    return downloads / "CoCre8 Issue Tracker V3.2.csv"
+
+
 @dataclass(frozen=True)
 class PlanningConfig:
     raw_dir: Path
@@ -74,6 +86,7 @@ class PlanningConfig:
     exco_output_dir: Path
     minstock3_dir: Path
     issue_tracker_csv: Path
+    spares_issued_report: Path
     sap_url: str
     sap_company: str
     sap_user: str
@@ -103,8 +116,9 @@ def get_config() -> PlanningConfig:
         exco_source_dir=Path(os.getenv("EXCO_SOURCE_DIR", "C:/dev/cc8/Exco/source_data")),
         exco_output_dir=Path(os.getenv("EXCO_OUTPUT_DIR", "C:/dev/cc8/Exco/output/csv")),
         minstock3_dir=Path(os.getenv("MINSTOCK3_DIR", "C:/dev/cc8/MinStock3")),
-        issue_tracker_csv=Path(
-            os.getenv("ISSUE_TRACKER_CSV", str(Path.home() / "Downloads" / "CoCre8 Issue Tracker V3.2.csv"))
+        issue_tracker_csv=Path(os.getenv("ISSUE_TRACKER_CSV") or str(_default_issue_tracker_csv())),
+        spares_issued_report=Path(
+            os.getenv("SPARES_ISSUED_REPORT", "C:/dev/Helpdesk_Upgrade/Reference/spares_issued2.xlsx")
         ),
         sap_url=(os.getenv("SAP_URL") or "").rstrip("/"),
         sap_company=os.getenv("SAP_COMPANY") or "",

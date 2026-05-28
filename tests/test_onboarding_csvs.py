@@ -13,6 +13,7 @@ from planning_v2.onboarding_csvs import (
     build_template_parts_usage,
     build_template_parts_usage_from_issue_tracker,
     build_template_purchase_orders,
+    build_template_service_orders,
     build_template_addresses,
     build_template_customers,
     build_template_warehouses,
@@ -98,7 +99,7 @@ class OnboardingCsvTests(unittest.TestCase):
             [
                 "externalAddressId",
                 "customerExternalId",
-                "6,0",
+                "addressLine1",
                 "addressLine2",
                 "addressLine3",
                 "city",
@@ -115,8 +116,9 @@ class OnboardingCsvTests(unittest.TestCase):
         self.assertEqual(len(out), 1)
         self.assertTrue(out.loc[0, "externalAddressId"].startswith("CC8ADDR-"))
         self.assertEqual(out.loc[0, "customerExternalId"], "CC8CUST-3CC274F6")
-        self.assertEqual(out.loc[0, "6,0"], "")
-        self.assertEqual(out.loc[0, "addressLine2"], "Kelvin to collect")
+        self.assertEqual(out.loc[0, "addressLine1"], "Kelvin to collect")
+        self.assertEqual(out.loc[0, "addressLine2"], "SOUTH AFRICA")
+        self.assertEqual(out.loc[0, "addressLine3"], "")
         self.assertEqual(out.loc[0, "city"], "Cape Town")
         self.assertEqual(out.loc[0, "stateProvince"], "Western Cape")
         self.assertEqual(out.loc[0, "countryCode"], "ZA")
@@ -139,6 +141,23 @@ class OnboardingCsvTests(unittest.TestCase):
         self.assertEqual(out.loc[0, "city"], "Simunye")
         self.assertEqual(out.loc[0, "stateProvince"], "Lubombo")
         self.assertEqual(out.loc[0, "countryCode"], "SZ")
+
+    def test_template_addresses_splits_address_lines_one_two_three(self) -> None:
+        usage = pd.DataFrame(
+            {
+                "Comments": ["Customer: Massmart"],
+                "CustomerRefNumber": ["77544562"],
+                "ShipToCode": [""],
+                "ShipToAddress": ["Line 1\rLine 2\rLine 3\rLine 4"],
+                "WarehouseCode": ["FUJMSM C"],
+            }
+        )
+
+        out = build_template_addresses(usage, ["addressLine1", "addressLine2", "addressLine3"])
+
+        self.assertEqual(out.loc[0, "addressLine1"], "Line 1")
+        self.assertEqual(out.loc[0, "addressLine2"], "Line 2")
+        self.assertEqual(out.loc[0, "addressLine3"], "Line 3 | Line 4")
 
     def test_stock_detail_numeric_fields_are_coerced(self) -> None:
         inventory = pd.DataFrame(
@@ -480,6 +499,18 @@ class OnboardingCsvTests(unittest.TestCase):
         self.assertEqual(list(out["quantityUsed"]), [2, 1])
         self.assertEqual(out.loc[0, "partsUsedDateTime"], "2026-02-01")
 
+    def test_template_warehouses_adds_primary_flag(self) -> None:
+        warehouses = pd.DataFrame(
+            {
+                "WarehouseCode": ["FUJITSU", "FUJ CT", "ACER"],
+                "WarehouseName": ["Main JHB", "Main CT", "Acer"],
+            }
+        )
+
+        out = build_template_warehouses(warehouses, ["warehouseId", "warehouseDescription"])
+
+        self.assertEqual(list(out["isPrimary"]), ["Y", "N", "N"])
+
     def test_template_parts_usage_can_include_spl_master_column(self) -> None:
         usage = pd.DataFrame(
             {
@@ -618,11 +649,13 @@ class OnboardingCsvTests(unittest.TestCase):
                 "quantityUsed",
                 "partsUsedDateTime",
                 "Warehouse",
+                "Warehouse Code",
                 "deviceSerialNumber",
                 "Master",
             ],
             masters,
             pd.DataFrame({"Call Number": ["67548724"], "Created": ["2025/10/15"], "Status": ["Closed"]}),
+            pd.DataFrame({"WarehouseCode": ["FUJITSU"], "WarehouseName": ["CC8 - MAIN - JHB - SPL"]}),
         )
 
         self.assertEqual(out.loc[0, "orderNumber"], "67548724")
@@ -636,7 +669,97 @@ class OnboardingCsvTests(unittest.TestCase):
         self.assertEqual(out.loc[0, "deviceSerialNumber"], "YM6D008491")
         self.assertEqual(out.loc[0, "quantityUsed"], 1)
         self.assertEqual(out.loc[0, "partsUsedDateTime"], "2025-10-17")
+        self.assertEqual(out.loc[0, "Warehouse"], "CC8 - MAIN - JHB - SPL")
+        self.assertEqual(out.loc[0, "Warehouse Code"], "FUJITSU")
         self.assertEqual(out.loc[0, "Master"], "SPL1")
+
+    def test_template_parts_usage_matches_helpdesk_status_with_customer_prefix(self) -> None:
+        usage = pd.DataFrame(
+            {
+                "DeliveryNoteNumber": ["1"],
+                "DocDate": ["20260527"],
+                "CustomerRefNumber": ["Acer:74782263 - 539904"],
+                "Comments": ["Customer: Acer"],
+                "ItemNo": ["DB.VYQ11.002"],
+                "WarehouseCode": ["ACERKH"],
+                "Quantity": [1],
+            }
+        )
+
+        out = build_template_parts_usage(
+            usage,
+            ["orderNumber", "orderStartDatetime", "orderStatus", "Warehouse", "Warehouse Code"],
+            None,
+            pd.DataFrame(
+                {
+                    "Call Number": ["74782263 - 539904"],
+                    "Created": ["2026-05-27T05:52:54Z"],
+                    "Status": ["DeliveryNote"],
+                }
+            ),
+            pd.DataFrame({"WarehouseCode": ["ACERKH"], "WarehouseName": ["CC8 - ACER - KHAULEZA - JHB - SPL - OFFSITE"]}),
+        )
+
+        self.assertEqual(out.loc[0, "orderStatus"], "DeliveryNote")
+        self.assertEqual(out.loc[0, "orderStartDatetime"], "2026-05-27")
+        self.assertEqual(out.loc[0, "Warehouse"], "CC8 - ACER - KHAULEZA - JHB - SPL - OFFSITE")
+        self.assertEqual(out.loc[0, "Warehouse Code"], "ACERKH")
+
+    def test_template_service_orders_uses_spares_issued_and_helpdesk_sla(self) -> None:
+        spares = pd.DataFrame(
+            {
+                "Cust Ord No": ["S_71919593", "S_71919593", "S_71942838"],
+                "Order Date": ["20/01/2026", "20/01/2026", "28/01/2026"],
+                "Order Time": ["1631", "1700", "1403"],
+                "Del Date": ["20/01/2026", "21/01/2026", "28/01/2026"],
+                "Del Time": ["1631", "0900", "1404"],
+                "Customer ": ["WCED", "WCED", "SENWES"],
+                "Customer Name": ["DW PC CORPORATION", "DW PC CORPORATION", "COCRE8 TECHNOLOGY SOLUTIONS"],
+            }
+        )
+        issue_tracker = pd.DataFrame(
+            {
+                "Call Number": ["71919593", "71942838"],
+                "Created": ["2026-01-20T16:31:00Z", "2026-01-28T14:03:00Z"],
+                "Status": ["Closed", "Closed"],
+                "SLA": ["8 Hours Recovery 24x7", "NBD response, 9x5"],
+                "DeliveryCity": ["Cape Town", "JHB"],
+                "Customer": ["WCED", "SENWES"],
+                "CustomerNormalized": ["WCED", "Other"],
+            }
+        )
+
+        out = build_template_service_orders(
+            spares,
+            [
+                "orderNumber",
+                "RequestID",
+                "location",
+                "eta",
+                "actualEta",
+                "actualResolveDateTime",
+                "recallDateTime",
+                "actualRecallDateTime",
+                "slaEtaClock",
+                "slaResolveClock",
+                "slaFailureCode",
+                "slaEtaHit",
+                "slaResolveDateTime",
+            ],
+            issue_tracker,
+        )
+
+        self.assertEqual(len(out), 2)
+        self.assertEqual(out.loc[0, "orderNumber"], "71919593")
+        self.assertEqual(out.loc[0, "RequestID"], "71919593")
+        self.assertEqual(out.loc[0, "location"], "Cape Town")
+        self.assertEqual(out.loc[0, "actualEta"], "2026-01-20 16:31:00")
+        self.assertEqual(out.loc[0, "slaEtaClock"], "8")
+        self.assertEqual(out.loc[0, "slaResolveClock"], "8")
+        self.assertEqual(out.loc[0, "slaResolveDateTime"], "2026-01-21 00:31:00")
+        self.assertEqual(out.loc[1, "orderNumber"], "71942838")
+        self.assertEqual(out.loc[1, "location"], "JHB")
+        self.assertEqual(out.loc[1, "slaResolveClock"], "")
 
     def test_template_purchase_orders_maps_sap_po_lines_and_receipts(self) -> None:
         source = pd.DataFrame(

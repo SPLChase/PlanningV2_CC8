@@ -27,6 +27,7 @@ def _cfg() -> PlanningConfig:
         exco_output_dir=Path("C:/dev/cc8/Exco/output/csv"),
         minstock3_dir=Path("C:/dev/cc8/MinStock3"),
         issue_tracker_csv=Path("C:/Users/example/Downloads/CoCre8 Issue Tracker V3.2.csv"),
+        spares_issued_report=Path("C:/dev/Helpdesk_Upgrade/Reference/spares_issued2.xlsx"),
         sap_url="https://sap.example/b1s/v1",
         sap_company="CC8",
         sap_user="user",

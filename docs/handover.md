@@ -303,7 +303,7 @@ These are still header-only:
 - `Customers.csv`: customer/site master semantics unresolved.
 - `Addresses.csv`: address object/source not agreed.
 - `Employees.csv`: assigned person/action group not available for MVP.
-- `ServiceOrder.csv`: needs HelpDesk/service-call lifecycle mapping.
+- `ServiceOrder.csv`: populated from `spares_issued2.xlsx` service-call rows plus HelpDesk SLA/location evidence. True resolve/recall fields are still unavailable and remain blank/out of scope.
 - `RepairOrder.csv`: returns/faulty/repair lifecycle not reliably structured.
 - `Models.csv`: installed base/model source not confirmed.
 - `PartTypes.csv`: taxonomy not confirmed.
@@ -347,7 +347,7 @@ Important future improvements:
    - `isKit`
    - `isCritical`
 3. Decide whether any pending templates are needed for MVP upload or can remain deferred.
-4. If `Customers`, `Addresses`, or `ServiceOrder` become MVP, use HelpDesk and SAP only with strict identifiers; avoid fuzzy matching.
+4. If further `ServiceOrder` lifecycle fields become MVP, use HelpDesk and SAP only with strict identifiers; avoid fuzzy matching.
 
 ## Current Test Status
 

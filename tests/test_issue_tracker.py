@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 
 import pandas as pd
 
@@ -9,6 +11,7 @@ from planning_v2.issue_tracker import (
     po_key,
     purchase_order_reconciliation,
     purchase_order_ticket_matches,
+    read_issue_tracker,
 )
 
 
@@ -90,6 +93,22 @@ class IssueTrackerTests(unittest.TestCase):
         reconciliation = purchase_order_reconciliation(purchase_orders, issue_tracker, pd.DataFrame())
 
         self.assertEqual(reconciliation.loc[0, "MatchStatus"], "No matching SAP PO number")
+
+    def test_read_issue_tracker_skips_sharepoint_schema_preamble(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "CoCre8 Issue Tracker V3.2 (2).csv"
+            path.write_text(
+                'ListSchema={"schemaXmlList":["<Field DisplayName=\\"Customer\\" />"]}\n'
+                '"Call Number","Created","Status","Customer","Part Nr","Serial Nr"\n'
+                '"74782263 - 539904","2026-05-27T05:52:54Z","DeliveryNote","Department of Justice","DB.VYQ11.002","SER123"\n',
+                encoding="utf-8",
+            )
+
+            out = read_issue_tracker(path)
+
+        self.assertEqual(list(out["Call Number"]), ["74782263 - 539904"])
+        self.assertEqual(list(out["Status"]), ["DeliveryNote"])
+        self.assertEqual(list(out["Serial Nr"]), ["SER123"])
 
 
 if __name__ == "__main__":

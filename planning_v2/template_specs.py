@@ -89,6 +89,8 @@ def load_template_fields(samples_dir: Path) -> dict[str, list[TemplateField]]:
         path = samples_dir / file_name
         if path.exists():
             headers = _load_individual_template_headers(path)
+            if output_object == "Addresses":
+                headers = ["addressLine1" if header == "6,0" else header for header in headers]
             raw_by_name = {field.field_name: field for field in raw_templates.get(output_object, [])}
             templates[output_object] = [
                 TemplateField(

@@ -46,6 +46,8 @@ def read_issue_tracker(path: Path) -> pd.DataFrame:
     for encoding in ["utf-8-sig", "cp1252", "latin-1"]:
         try:
             df = pd.read_csv(path, dtype=str, encoding=encoding).fillna("")
+            if len(df.columns) > 0 and str(df.columns[0]).startswith("ListSchema="):
+                df = pd.read_csv(path, dtype=str, encoding=encoding, skiprows=1).fillna("")
             return normalize_issue_tracker(df)
         except UnicodeDecodeError:
             continue

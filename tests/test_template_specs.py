@@ -30,6 +30,26 @@ class TemplateSpecTests(unittest.TestCase):
 
         self.assertEqual(columns["WarehouseStockOnHand"], ["partNumber", "warehouseCode"])
 
+    def test_addresses_template_repairs_bad_sample_header(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            samples = Path(tmp)
+            raw = Workbook()
+            raw_ws = raw.active
+            raw_ws.title = "Addresses_Template"
+            raw_ws.append(["FieldName", "FieldType", "Examples", "Notes"])
+            raw_ws.append(["externalAddressId", "String", "", ""])
+            raw_ws.append(["addressLine1", "String", "", ""])
+            raw.save(samples / "Templates raw.xlsx")
+
+            individual = Workbook()
+            sheet = individual.active
+            sheet.append(["externalAddressId", "6,0", "addressLine2"])
+            individual.save(samples / "Addresses.xlsx")
+
+            columns = template_columns(samples)
+
+        self.assertEqual(columns["Addresses"], ["externalAddressId", "addressLine1", "addressLine2"])
+
 
 if __name__ == "__main__":
     unittest.main()

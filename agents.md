@@ -128,7 +128,7 @@ This repo is for onboarding CoCre8 data into the external Planning V2 Excel/CSV 
 - MVP/deferred template decisions from Chris:
   - `Models.csv`: important, but not for MVP.
   - `RepairOrder.csv`: not used by CoCre8.
-  - `ServiceOrder.csv`: would be the HelpDesk ticket list, but without ticket close times it is not usable for MVP.
+  - `ServiceOrder.csv`: populated from the spares-issued report plus HelpDesk SLA/location evidence. True resolve/recall fields are still unavailable and remain blank/out of scope.
   - `Yields.csv`: means expected output/uses or average years before breakdown; not for MVP.
   - `Nodes.csv`: umbrella for regional warehouse/address hierarchy; not for MVP.
   - `ActionGroups.csv`: technician/action group by region; not for MVP.

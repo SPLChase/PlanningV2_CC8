@@ -6,7 +6,7 @@ import argparse
 import re
 import shutil
 import zlib
-from datetime import date
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -51,6 +51,7 @@ POPULATED_TEMPLATE_FIELDS = {
         "supplyWarehouseId": "Manual fill workbook:supplyWarehouseId",
         "warehouseTypeId": "Manual fill workbook:warehouseTypeId",
         "warehouseDescription": "SAP Service Layer Warehouses:WarehouseName",
+        "isPrimary": "Business rule: Y only for FUJITSU; N for all other CoCre8 warehouses",
         "isReplenishable": "Manual fill workbook:isReplenishable",
         "isBranchStockable": "Manual fill workbook:isBranchStockable",
         "isRemote": "Manual fill workbook:isRemote",
@@ -81,8 +82,9 @@ POPULATED_TEMPLATE_FIELDS = {
     "Addresses": {
         "externalAddressId": "Generated stable CC8ADDR-* id from generated customer id + normalized SAP Delivery Note ShipToAddress",
         "customerExternalId": "Generated stable CC8CUST-* id matching Customers.customerId",
-        "addressLine2": "SAP Service Layer SQLQueries:ODLN.Address2/ShipToAddress first usable line",
-        "addressLine3": "SAP Service Layer SQLQueries:ODLN.Address2/ShipToAddress remaining usable lines",
+        "addressLine1": "SAP Service Layer SQLQueries:ODLN.Address2/ShipToAddress first usable line",
+        "addressLine2": "SAP Service Layer SQLQueries:ODLN.Address2/ShipToAddress second usable line",
+        "addressLine3": "SAP Service Layer SQLQueries:ODLN.Address2/ShipToAddress third and remaining usable lines",
         "city": "SAP DN ShipToAddress city keyword, collection warehouse location, or MinStock/Exco warehouse location map",
         "stateProvince": "Derived from inferred city/location code",
         "countryCode": "ZA by default; SZ for Royal Swazi/RSSC/Swazi/Eswatini evidence",
@@ -101,9 +103,19 @@ POPULATED_TEMPLATE_FIELDS = {
         "serialNumber": "SAP Service Layer SQLQueries:parsed Serial number from ODLN.Comments where present",
         "quantityUsed": "SAP Service Layer SQLQueries:DLN1.Quantity",
         "partsUsedDateTime": "SAP Service Layer SQLQueries:ODLN.DocDate",
-        "Warehouse": "SAP Service Layer SQLQueries:DLN1.WhsCode",
+        "Warehouse": "MinStock3/Exco warehouse lookup:WarehouseName by SAP DLN1.WhsCode",
+        "Warehouse Code": "SAP Service Layer SQLQueries:DLN1.WhsCode",
         "deviceSerialNumber": "SAP Service Layer SQLQueries:parsed Serial number from ODLN.Comments where present",
         "Master": "Reference masters.csv:SPL Master by used part",
+    },
+    "ServiceOrder": {
+        "orderNumber": "Spares issued report:Cust Ord No normalised to call/ticket number",
+        "RequestID": "Spares issued report:Cust Ord No normalised to call/ticket number",
+        "location": "HelpDesk issue tracker:DeliveryCity by call number; falls back to report customer label",
+        "actualEta": "Spares issued report:Del Date + Del Time, representing delivery note issued time",
+        "slaEtaClock": "HelpDesk issue tracker:SLA target hours from call received to SLA deadline",
+        "slaResolveClock": "HelpDesk issue tracker:SLA target hours for Recovery/Repair/Resolve-type SLAs only",
+        "slaResolveDateTime": "HelpDesk issue tracker:SLA-derived deadline for Recovery/Repair/Resolve-type SLAs",
     },
     "PurchaseOrders": {
         "purchaseOrderNumber": "SAP Service Layer SQLQueries:OPOR.NumAtCard, falling back only to PO-like reference parsed from OPOR.Comments",
@@ -170,6 +182,12 @@ OUT_OF_SCOPE_TEMPLATE_FIELDS = {
     ("PurchaseOrders", "customerId"),
     ("PurchaseOrders", "requestTicketDateTime"),
     ("PurchaseOrders", "isResolved"),
+    ("ServiceOrder", "eta"),
+    ("ServiceOrder", "actualResolveDateTime"),
+    ("ServiceOrder", "recallDateTime"),
+    ("ServiceOrder", "actualRecallDateTime"),
+    ("ServiceOrder", "slaFailureCode"),
+    ("ServiceOrder", "slaEtaHit"),
     ("InventoryTransfers", "addressId"),
     ("InventoryTransfers", "Bpart"),
     ("InventoryTransfers", "shipListCode"),
@@ -181,7 +199,6 @@ OUT_OF_SCOPE_TEMPLATE_FIELDS = {
     ("Customers", "customerGroupId"),
     ("Customers", "dseSlaCost"),
     ("Customers", "dseSlaRevenue"),
-    ("Addresses", "6,0"),
     ("Addresses", "nodeId"),
 }
 
@@ -254,6 +271,36 @@ def read_warehouse_location_lookup(cfg: PlanningConfig) -> pd.DataFrame:
     return combined.drop_duplicates(subset=["WarehouseKey"], keep="first").reset_index(drop=True)
 
 
+def _warehouse_name_lookup(warehouse_locations: pd.DataFrame | None) -> dict[str, str]:
+    if warehouse_locations is None or warehouse_locations.empty:
+        return {}
+    work = warehouse_locations.copy()
+    code = _first_col(work, ["WarehouseCode", "warehouseCode", "warehouseId"]).map(_clean_text)
+    name = _first_col(work, ["WarehouseName", "Warehouse Name", "warehouseDescription"]).map(_clean_text)
+    lookup = pd.DataFrame({"WarehouseCode": code, "WarehouseName": name})
+    lookup = lookup[lookup["WarehouseCode"].astype(str).str.strip().ne("")]
+    lookup = lookup[lookup["WarehouseName"].astype(str).str.strip().ne("")]
+    lookup["WarehouseKey"] = lookup["WarehouseCode"].str.upper().str.strip()
+    return lookup.drop_duplicates(subset=["WarehouseKey"], keep="first").set_index("WarehouseKey")["WarehouseName"].to_dict()
+
+
+def _combine_warehouse_name_sources(*frames: pd.DataFrame | None) -> pd.DataFrame:
+    rows = []
+    for frame in frames:
+        if frame is None or frame.empty:
+            continue
+        code = _first_col(frame, ["WarehouseCode", "warehouseCode", "warehouseId"]).map(_clean_text)
+        name = _first_col(frame, ["WarehouseName", "Warehouse Name", "warehouseDescription"]).map(_clean_text)
+        location = _first_col(frame, ["Location", "LocationKey", "location"]).map(_clean_text)
+        rows.append(pd.DataFrame({"WarehouseCode": code, "WarehouseName": name, "Location": location}))
+    if not rows:
+        return pd.DataFrame(columns=["WarehouseCode", "WarehouseName", "Location"])
+    combined = pd.concat(rows, ignore_index=True, sort=False).fillna("")
+    combined = combined[combined["WarehouseCode"].astype(str).str.strip().ne("")]
+    combined["WarehouseKey"] = combined["WarehouseCode"].str.upper().str.strip()
+    return combined.drop_duplicates(subset=["WarehouseKey"], keep="first").drop(columns=["WarehouseKey"]).reset_index(drop=True)
+
+
 def read_altsgen_part_type_evidence(output_parent: Path) -> pd.DataFrame:
     candidates = [
         output_parent / "review_evidence" / "Altsgen_PartType_Evidence.csv",
@@ -322,6 +369,7 @@ def generate_onboarding_csvs(cfg: PlanningConfig, out_dir: Path) -> list[Path]:
     spi_cost_history = _read_spi_cost_history(cfg.reference_dir / "SPI_Historical")
     combined_spi_costs = _combine_spi_cost_sources(spi, spi_cost_history)
     issue_tracker = read_issue_tracker(cfg.issue_tracker_csv)
+    spares_issued = read_spares_issued_report(cfg.spares_issued_report)
     manual_warehouses = read_manual_warehouse_fill(cfg)
     warehouse_locations = read_warehouse_location_lookup(cfg)
     altsgen_part_type_evidence = read_altsgen_part_type_evidence(out_dir.parent)
@@ -348,6 +396,7 @@ def generate_onboarding_csvs(cfg: PlanningConfig, out_dir: Path) -> list[Path]:
         masters,
         purchase_orders,
         issue_tracker,
+        spares_issued,
         manual_warehouses,
         spi_cost_history,
         altsgen_part_type_evidence,
@@ -427,6 +476,7 @@ def build_template_outputs(
     masters: pd.DataFrame | None = None,
     purchase_orders: pd.DataFrame | None = None,
     issue_tracker: pd.DataFrame | None = None,
+    spares_issued: pd.DataFrame | None = None,
     manual_warehouses: pd.DataFrame | None = None,
     spi_cost_history: pd.DataFrame | None = None,
     altsgen_part_type_evidence: pd.DataFrame | None = None,
@@ -450,7 +500,19 @@ def build_template_outputs(
                 columns,
             )
         elif object_name == "PartsUsage":
-            outputs[object_name] = build_template_parts_usage(usage, columns, masters, issue_tracker)
+            outputs[object_name] = build_template_parts_usage(
+                usage,
+                columns,
+                masters,
+                issue_tracker,
+                _combine_warehouse_name_sources(warehouses, warehouse_locations),
+            )
+        elif object_name == "ServiceOrder":
+            outputs[object_name] = build_template_service_orders(
+                spares_issued if spares_issued is not None else pd.DataFrame(),
+                columns,
+                issue_tracker,
+            )
         elif object_name == "PurchaseOrders":
             combined_spi = _combine_spi_cost_sources(spi, spi_cost_history if spi_cost_history is not None else pd.DataFrame())
             outputs[object_name] = build_template_purchase_orders(
@@ -622,6 +684,22 @@ def read_manual_warehouse_fill(cfg: PlanningConfig) -> pd.DataFrame:
     return pd.DataFrame()
 
 
+def read_spares_issued_report(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        return pd.DataFrame()
+    try:
+        book = pd.ExcelFile(path)
+    except Exception:
+        return pd.DataFrame()
+    sheet_name = next((name for name in book.sheet_names if "customer" in name.lower()), "")
+    if not sheet_name:
+        return pd.DataFrame()
+    try:
+        return pd.read_excel(book, sheet_name=sheet_name, dtype=str).fillna("")
+    except Exception:
+        return pd.DataFrame()
+
+
 def filter_active_warehouses(
     inventory: pd.DataFrame,
     warehouses: pd.DataFrame,
@@ -743,6 +821,60 @@ def _parse_any_date(value: object) -> str:
     return parsed.strftime("%Y-%m-%d")
 
 
+def _parse_datetime_value(value: object) -> datetime | None:
+    text = str(value or "").strip()
+    if not text or text in {"-", "0"}:
+        return None
+    parsed = pd.to_datetime(text, errors="coerce")
+    if pd.isna(parsed):
+        return None
+    return parsed.to_pydatetime().replace(tzinfo=None)
+
+
+def _report_datetime(date_value: object, time_value: object) -> datetime | None:
+    date_text = str(date_value or "").strip()
+    if not date_text or date_text == "-":
+        return None
+    parsed_date = pd.to_datetime(date_text, format="%d/%m/%Y", errors="coerce")
+    if pd.isna(parsed_date):
+        parsed_date = pd.to_datetime(date_text, dayfirst=True, errors="coerce")
+    if pd.isna(parsed_date):
+        return None
+    parsed_time = _report_time(time_value)
+    return datetime.combine(parsed_date.to_pydatetime().date(), parsed_time)
+
+
+def _report_time(value: object) -> time:
+    text = str(value or "").strip()
+    if not text or text == "-":
+        return time(0, 0)
+    text = re.sub(r"\.0$", "", text)
+    if ":" in text:
+        parsed = pd.to_datetime(text, errors="coerce")
+        if not pd.isna(parsed):
+            return parsed.to_pydatetime().time().replace(second=0, microsecond=0)
+    digits = re.sub(r"\D", "", text)
+    if not digits:
+        return time(0, 0)
+    digits = digits.zfill(4)[-4:]
+    hour = min(int(digits[:2]), 23)
+    minute = min(int(digits[2:]), 59)
+    return time(hour, minute)
+
+
+def _format_datetime(value: datetime | None) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    return value.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _first_datetime(values: pd.Series) -> datetime | None:
+    cleaned = [value for value in values if isinstance(value, datetime) and not pd.isna(value)]
+    if not cleaned:
+        return None
+    return min(cleaned)
+
+
 def _parse_stock_audit_date(value: object) -> str:
     text = str(value or "").strip()
     if not text:
@@ -782,8 +914,8 @@ def _call_match_key(value: object) -> str:
     if not text:
         return ""
     tokens = re.findall(r"\d{6,}", text)
-    if len(tokens) == 1:
-        return tokens[0].lstrip("0") or "0"
+    if tokens:
+        return "|".join((token.lstrip("0") or "0") for token in tokens)
     return re.sub(r"\s+", " ", text)
 
 
@@ -791,7 +923,16 @@ def _helpdesk_by_call(issue_tracker: pd.DataFrame | None) -> dict[str, dict[str,
     if issue_tracker is None or issue_tracker.empty:
         return {}
     work = issue_tracker.copy()
-    for column in ["Call Number", "Created", "Status"]:
+    columns = [
+        "Call Number",
+        "Created",
+        "Status",
+        "SLA",
+        "DeliveryCity",
+        "Customer",
+        "CustomerNormalized",
+    ]
+    for column in columns:
         if column not in work.columns:
             work[column] = ""
     work["CallMatchKey"] = work["Call Number"].map(_call_match_key)
@@ -799,7 +940,7 @@ def _helpdesk_by_call(issue_tracker: pd.DataFrame | None) -> dict[str, dict[str,
     if work.empty:
         return {}
     work = work.drop_duplicates(subset=["CallMatchKey"], keep="first")
-    return work.set_index("CallMatchKey")[["Created", "Status"]].to_dict("index")
+    return work.set_index("CallMatchKey")[columns[1:]].to_dict("index")
 
 
 def _filtered_sap_delivery_note_rows(usage: pd.DataFrame) -> pd.DataFrame:
@@ -1100,11 +1241,12 @@ def build_template_parts_usage(
     columns: list[str],
     masters: pd.DataFrame | None = None,
     issue_tracker: pd.DataFrame | None = None,
+    warehouse_locations: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     if usage.empty:
         return pd.DataFrame(columns=columns)
     if {"DeliveryNoteNumber", "ItemNo", "WarehouseCode"}.issubset(usage.columns):
-        return _build_template_parts_usage_from_sap_delivery_notes(usage, columns, masters, issue_tracker)
+        return _build_template_parts_usage_from_sap_delivery_notes(usage, columns, masters, issue_tracker, warehouse_locations)
     return _build_template_parts_usage_from_stock_audit(usage, columns, masters)
 
 
@@ -1113,6 +1255,7 @@ def _build_template_parts_usage_from_sap_delivery_notes(
     columns: list[str],
     masters: pd.DataFrame | None = None,
     issue_tracker: pd.DataFrame | None = None,
+    warehouse_locations: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     dn = _filtered_sap_delivery_note_rows(usage)
     if dn.empty:
@@ -1127,6 +1270,9 @@ def _build_template_parts_usage_from_sap_delivery_notes(
     customer = dn.apply(_customer_name_from_delivery_note_row, axis=1)
     helpdesk = _helpdesk_by_call(issue_tracker)
     helpdesk_rows = order_number.map(lambda value: helpdesk.get(_call_match_key(value), {}))
+    warehouse_code = dn["WarehouseCode"].astype(str).str.strip()
+    warehouse_name = warehouse_code.str.upper().map(_warehouse_name_lookup(warehouse_locations)).fillna("")
+    warehouse_name = warehouse_name.where(warehouse_name.astype(str).str.strip().ne(""), warehouse_code)
 
     out = _blank_template(columns, len(dn))
     if "orderNumber" in out.columns:
@@ -1150,7 +1296,12 @@ def _build_template_parts_usage_from_sap_delivery_notes(
     if "partsUsedDateTime" in out.columns:
         out["partsUsedDateTime"] = dn["DocDate"].map(_sap_date)
     if "Warehouse" in out.columns:
-        out["Warehouse"] = dn["WarehouseCode"].astype(str).str.strip()
+        out["Warehouse"] = warehouse_name
+    if "Warehouse Code" not in out.columns:
+        insert_at = out.columns.get_loc("Warehouse") + 1 if "Warehouse" in out.columns else len(out.columns)
+        out.insert(insert_at, "Warehouse Code", warehouse_code)
+    else:
+        out["Warehouse Code"] = warehouse_code
     if "deviceSerialNumber" in out.columns:
         out["deviceSerialNumber"] = serial
     if "Master" in out.columns:
@@ -1254,6 +1405,126 @@ def build_template_parts_usage_from_issue_tracker(
         tracker_master = _col(source, "SPLMaster").astype(str).str.strip()
         out["Master"] = tracker_master.where(tracker_master.ne(""), mapped)
     return out.drop_duplicates(keep="first")
+
+
+def build_template_service_orders(
+    spares_issued: pd.DataFrame,
+    columns: list[str],
+    issue_tracker: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    if spares_issued.empty:
+        return pd.DataFrame(columns=columns)
+    source = spares_issued.copy()
+    for column in ["Cust Ord No", "Order Date", "Order Time", "Del Date", "Del Time", "Customer ", "Customer Name"]:
+        if column not in source.columns:
+            source[column] = ""
+    source["ServiceCallNumber"] = source["Cust Ord No"].map(_service_call_number)
+    source = source[source["ServiceCallNumber"].astype(str).str.strip().ne("")].copy()
+    if source.empty:
+        return pd.DataFrame(columns=columns)
+
+    source["OrderDateTimeValue"] = source.apply(lambda row: _report_datetime(row.get("Order Date"), row.get("Order Time")), axis=1)
+    source["DeliveryDateTimeValue"] = source.apply(lambda row: _report_datetime(row.get("Del Date"), row.get("Del Time")), axis=1)
+    helpdesk = _helpdesk_by_call(issue_tracker)
+
+    rows: list[dict[str, object]] = []
+    for call_number, group in source.groupby("ServiceCallNumber", sort=False):
+        helpdesk_row = helpdesk.get(_call_match_key(call_number), {})
+        open_dt = _first_datetime(group["OrderDateTimeValue"])
+        helpdesk_created = _parse_datetime_value(helpdesk_row.get("Created", ""))
+        if open_dt is None:
+            open_dt = helpdesk_created
+        actual_eta = _first_datetime(group["DeliveryDateTimeValue"])
+        sla = _clean_text(helpdesk_row.get("SLA"))
+        sla_fields = _service_order_sla_fields(open_dt, sla)
+        rows.append(
+            {
+                "orderNumber": call_number,
+                "RequestID": call_number,
+                "location": _service_order_location(group, helpdesk_row),
+                "actualEta": _format_datetime(actual_eta),
+                "slaEtaClock": sla_fields["slaEtaClock"],
+                "slaResolveClock": sla_fields["slaResolveClock"],
+                "slaResolveDateTime": sla_fields["slaResolveDateTime"],
+            }
+        )
+
+    out = _blank_template(columns, len(rows))
+    source_rows = pd.DataFrame(rows)
+    for column in source_rows.columns:
+        if column in out.columns:
+            out[column] = source_rows[column]
+    return out.drop_duplicates(subset=["orderNumber"], keep="first").reset_index(drop=True) if "orderNumber" in out.columns else out
+
+
+def _service_call_number(value: object) -> str:
+    text = _clean_text(value)
+    if not text or text == "-":
+        return ""
+    text = re.sub(r"^\s*S\s*[_-]\s*", "", text, flags=re.IGNORECASE)
+    tokens = re.findall(r"\d{6,}", text)
+    if len(tokens) == 1:
+        return tokens[0].lstrip("0") or "0"
+    return text
+
+
+def _service_order_location(group: pd.DataFrame, helpdesk_row: dict[str, str]) -> str:
+    delivery_city = _clean_text(helpdesk_row.get("DeliveryCity"))
+    if delivery_city and delivery_city.upper() not in {"UNKNOWN", "N/A", "NA"}:
+        return delivery_city
+    normalized = _clean_text(helpdesk_row.get("CustomerNormalized"))
+    if normalized and normalized.upper() not in {"OTHER", "UNKNOWN", "N/A", "NA"}:
+        return normalized
+    customer_label = _most_common_text(group.get("Customer ", pd.Series(dtype=str)))
+    if customer_label:
+        return customer_label
+    return _most_common_text(group.get("Customer Name", pd.Series(dtype=str)))
+
+
+def _service_order_sla_fields(open_dt: datetime | None, sla: object) -> dict[str, str]:
+    parsed = parse_customer_sla(sla)
+    raw = _clean_text(sla)
+    response_hours = _clean_text(parsed.get("stdResponseTime"))
+    repair_hours = _clean_text(parsed.get("stdRepairTime"))
+    target_hours = repair_hours or response_hours
+    is_recovery = bool(re.search(r"\b(RECOVERY|RECOVER|REPAIR|RESOLVE|RESOLUTION|RECOV|REC)\b", raw.upper()))
+    due_dt = _sla_target_datetime(open_dt, raw, target_hours)
+    eta_clock = _format_float(_hours_between(open_dt, due_dt)) if open_dt and due_dt else target_hours
+    resolve_clock = ""
+    resolve_due = ""
+    if is_recovery:
+        resolve_clock = eta_clock
+        resolve_due = _format_datetime(due_dt)
+    return {
+        "slaEtaClock": eta_clock,
+        "slaResolveClock": resolve_clock,
+        "slaResolveDateTime": resolve_due,
+    }
+
+
+def _sla_target_datetime(open_dt: datetime | None, raw_sla: object, hours: object) -> datetime | None:
+    if open_dt is None:
+        return None
+    raw = _clean_text(raw_sla).upper()
+    if re.search(r"\bNBD\b|\bNEXT BUSINESS DAY\b|\bNBS\b", raw):
+        return datetime.combine(_next_business_day(open_dt.date()), time(17, 0))
+    numeric_hours = pd.to_numeric(pd.Series([hours]), errors="coerce").iloc[0]
+    if pd.isna(numeric_hours):
+        return None
+    return open_dt + timedelta(hours=float(numeric_hours))
+
+
+def _next_business_day(start_date: date) -> date:
+    candidate = start_date + timedelta(days=1)
+    while candidate.weekday() >= 5:
+        candidate += timedelta(days=1)
+    return candidate
+
+
+def _hours_between(start: datetime | None, end: datetime | None) -> float | str:
+    if start is None or end is None:
+        return ""
+    return max((end - start).total_seconds() / 3600, 0)
 
 
 def build_template_purchase_orders(
@@ -1749,11 +2020,15 @@ def build_template_warehouses(
         out["warehouseId"] = _col(warehouses, "WarehouseCode")
     if "warehouseDescription" in out.columns:
         out["warehouseDescription"] = _col(warehouses, "WarehouseName")
+    warehouse_ids = out["warehouseId"].astype(str).str.strip() if "warehouseId" in out.columns else pd.Series([""] * len(out))
+    if "isPrimary" not in out.columns:
+        insert_at = out.columns.get_loc("warehouseDescription") + 1 if "warehouseDescription" in out.columns else len(out.columns)
+        out.insert(insert_at, "isPrimary", "")
+    out["isPrimary"] = warehouse_ids.str.upper().eq("FUJITSU").map({True: "Y", False: "N"})
     if manual_warehouses is not None and not manual_warehouses.empty and "warehouseId" in manual_warehouses.columns:
         manual = manual_warehouses.copy()
         manual["warehouseId"] = manual["warehouseId"].astype(str).str.strip()
         manual_by_id = manual.drop_duplicates(subset=["warehouseId"], keep="first").set_index("warehouseId")
-        warehouse_ids = out["warehouseId"].astype(str).str.strip() if "warehouseId" in out.columns else pd.Series([""] * len(out))
         for column in [
             "addressId",
             "returnWarehouseId",
@@ -2052,6 +2327,7 @@ def build_template_addresses(
     for column in [
         "externalAddressId",
         "customerExternalId",
+        "addressLine1",
         "addressLine2",
         "addressLine3",
         "city",
@@ -2063,8 +2339,6 @@ def build_template_addresses(
     ]:
         if column in out.columns:
             out[column] = _col(source, column)
-    if "6,0" in out.columns:
-        out["6,0"] = ""
     if "nodeId" in out.columns:
         out["nodeId"] = ""
     if "externalAddressId" in out.columns:
@@ -2081,6 +2355,7 @@ def _address_rows_from_sap_delivery_notes(
         "customerExternalId",
         "CustomerName",
         "RawShipToAddress",
+        "addressLine1",
         "addressLine2",
         "addressLine3",
         "city",
@@ -2119,7 +2394,7 @@ def _address_rows_from_sap_delivery_notes(
         raw_address = _most_common_text(group["RawShipToAddress"])
         customer_name = _most_common_text(group["CustomerName"])
         customer_id = _generated_customer_id(customer_name)
-        address_line2, address_line3 = _address_lines(raw_address)
+        address_line1, address_line2, address_line3 = _address_lines(raw_address)
         location = _infer_address_location(raw_address, row.get("WarehouseCode"), customer_name, location_by_warehouse)
         rows.append(
             {
@@ -2127,6 +2402,7 @@ def _address_rows_from_sap_delivery_notes(
                 "customerExternalId": customer_id,
                 "CustomerName": customer_name,
                 "RawShipToAddress": raw_address,
+                "addressLine1": address_line1,
                 "addressLine2": address_line2,
                 "addressLine3": address_line3,
                 "city": location["city"],
@@ -2163,14 +2439,15 @@ def _clean_address_text(value: object) -> str:
     return "\n".join(lines)
 
 
-def _address_lines(address: object) -> tuple[str, str]:
+def _address_lines(address: object) -> tuple[str, str, str]:
     lines = [_clean_extracted_value(line) for line in _clean_address_text(address).split("\n")]
     lines = [line for line in lines if line]
     if not lines:
-        return "", ""
-    line2 = lines[0]
-    line3 = " | ".join(lines[1:])
-    return line2[:255], line3[:255]
+        return "", "", ""
+    line1 = lines[0]
+    line2 = lines[1] if len(lines) > 1 else ""
+    line3 = " | ".join(lines[2:])
+    return line1[:255], line2[:255], line3[:255]
 
 
 def _generated_address_id(customer_id: object, address: object) -> str:

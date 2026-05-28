@@ -70,11 +70,6 @@ TEMPLATE_OBJECT_DECISIONS = {
         "readiness": "Out of CoCre8 scope",
         "notes": "Chris feedback: RepairOrder is not used by CoCre8.",
     },
-    "ServiceOrder": {
-        "status": "DEFERRED",
-        "readiness": "Deferred post-MVP",
-        "notes": "Chris feedback: this would be the HelpDesk ticket list, but without ticket close times it is not usable for MVP.",
-    },
     "Yields": {
         "status": "DEFERRED",
         "readiness": "Deferred post-MVP",
