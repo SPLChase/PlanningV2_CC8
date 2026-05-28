@@ -308,7 +308,7 @@ These are still header-only:
 - `Models.csv`: installed base/model source not confirmed.
 - `PartTypes.csv`: taxonomy not confirmed.
 - `Yields.csv`: no confirmed source.
-- `WarehouseExclusions.csv`: needs business rules.
+- `WarehouseExclusions.csv`: generate stock-pooling exclusions from the confirmed CoCre8 interchangeability pools. FUJITSU/FUJ CT/FSCGREEN/FSCGRNCT share stock, Massmart warehouses share stock, Royal Swazi warehouses share stock, and all other cross-pool warehouse pairs are excluded.
 
 ## HelpDesk Flow Notes
 

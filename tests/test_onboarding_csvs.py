@@ -16,6 +16,7 @@ from planning_v2.onboarding_csvs import (
     build_template_addresses,
     build_template_customers,
     build_template_warehouses,
+    build_template_warehouse_exclusions,
     build_template_stock_on_hand,
     build_template_vendors,
     build_template_inventory_transfers,
@@ -874,6 +875,29 @@ class OnboardingCsvTests(unittest.TestCase):
         result = validate_template_outputs(Path("out"), outputs, templates)
 
         self.assertEqual(result.loc[0, "Status"], "FAIL")
+
+    def test_warehouse_exclusions_block_cross_pool_stock_sharing(self) -> None:
+        warehouses = pd.DataFrame(
+            {
+                "WarehouseCode": ["FUJITSU", "FUJ CT", "FUJMSM C", "FUJMSM J", "ACER", "CHL001", "MXT"],
+            }
+        )
+
+        out = build_template_warehouse_exclusions(
+            warehouses,
+            ["Secondary TO", "Secondary FROM", "Cross TO", "Cross FROM", "Primary TO"],
+        )
+
+        secondary_pairs = set(zip(out["Secondary TO"], out["Secondary FROM"]))
+        cross_pairs = set(zip(out["Cross TO"], out["Cross FROM"]))
+        self.assertNotIn(("FUJITSU", "FUJ CT"), secondary_pairs)
+        self.assertNotIn(("FUJMSM C", "FUJMSM J"), secondary_pairs)
+        self.assertIn(("FUJITSU", "FUJMSM C"), secondary_pairs)
+        self.assertIn(("FUJMSM C", "FUJITSU"), secondary_pairs)
+        self.assertIn(("ACER", "FUJITSU"), secondary_pairs)
+        self.assertEqual(secondary_pairs, cross_pairs)
+        self.assertEqual(set(out["Primary TO"]), {""})
+        self.assertFalse(out.isin(["CHL001", "MXT"]).any().any())
 
 
 if __name__ == "__main__":

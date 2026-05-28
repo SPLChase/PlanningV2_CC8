@@ -142,6 +142,13 @@ POPULATED_TEMPLATE_FIELDS = {
         "partTypeDescription": "Hosted Altsgen batch API:spec_summary.description or humanized commodity_type",
         "isReworkable": "Business rule: N/No for all CoCre8 part types",
     },
+    "WarehouseExclusions": {
+        "Secondary TO": "Business rule: destination warehouse in a prohibited warehouse-to-warehouse stock-pooling route",
+        "Secondary FROM": "Business rule: source warehouse in a prohibited warehouse-to-warehouse stock-pooling route",
+        "Cross TO": "Business rule: destination warehouse in a prohibited warehouse-to-warehouse stock-pooling route",
+        "Cross FROM": "Business rule: source warehouse in a prohibited warehouse-to-warehouse stock-pooling route",
+        "Primary TO": "Left blank for CoCre8 v1; current rule only limits warehouse-to-warehouse stock pooling",
+    },
 }
 
 OUT_OF_SCOPE_TEMPLATE_FIELDS = {
@@ -202,6 +209,12 @@ ROW_REQUIRED_TEMPLATE_FIELDS = {
 EXCLUDED_WAREHOUSE_CODES = {"CHOICE", "GCJRMA", "MXT"}
 EXCLUDED_WAREHOUSE_PREFIXES = ("CHL",)
 EXCLUDED_WAREHOUSE_NAME_PATTERNS = ("CHOICE LOGISTICS", "CHOICE RMA", "MAXTEC")
+
+WAREHOUSE_INTERCHANGEABILITY_POOLS = {
+    "main_non_dedicated": {"FUJITSU", "FUJ CT", "FSCGREEN", "FSCGRNCT"},
+    "massmart": {"FUJMSM C", "FUJMSM J", "FUJMSVCJ"},
+    "royal_swazi": {"FUJ RSSC", "FUJSWBAN"},
+}
 
 
 def _read_csv(path: Path) -> pd.DataFrame:
@@ -355,6 +368,7 @@ def generate_onboarding_csvs(cfg: PlanningConfig, out_dir: Path) -> list[Path]:
             issue_tracker,
             masters,
             manual_warehouses,
+            warehouses,
             parts,
             combined_spi_costs,
         )
@@ -461,6 +475,8 @@ def build_template_outputs(
             )
         elif object_name == "InventoryTransfers":
             outputs[object_name] = build_template_inventory_transfers(stock_flow, columns)
+        elif object_name == "WarehouseExclusions":
+            outputs[object_name] = build_template_warehouse_exclusions(warehouses, columns, manual_warehouses)
         else:
             outputs[object_name] = pd.DataFrame(columns=columns)
     return outputs
@@ -1688,6 +1704,7 @@ def write_review_evidence(
     issue_tracker: pd.DataFrame,
     masters: pd.DataFrame | None,
     manual_warehouses: pd.DataFrame | None = None,
+    warehouses: pd.DataFrame | None = None,
     parts: pd.DataFrame | None = None,
     spi_costs: pd.DataFrame | None = None,
 ) -> list[Path]:
@@ -1706,6 +1723,13 @@ def write_review_evidence(
                 masters,
             ),
             evidence_dir / "PartCost_Evidence.csv",
+        ),
+        (
+            build_warehouse_exclusion_evidence(
+                warehouses if warehouses is not None else pd.DataFrame(),
+                manual_warehouses,
+            ),
+            evidence_dir / "WarehouseExclusions_Evidence.csv",
         ),
     ]
     if manual_warehouses is not None and not manual_warehouses.empty:
@@ -1748,6 +1772,97 @@ def build_template_warehouses(
             known = obsolete.isin(["Y", "N"])
             out.loc[known, "warehouseStatusId"] = obsolete.loc[known].map({"Y": "N", "N": "Y"})
     return out.drop_duplicates(subset=["warehouseId"], keep="first") if "warehouseId" in out.columns else out
+
+
+def build_template_warehouse_exclusions(
+    warehouses: pd.DataFrame,
+    columns: list[str],
+    manual_warehouses: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Build route-level stock-pooling exclusions between CoCre8 warehouse pools."""
+
+    warehouse_ids = _warehouse_exclusion_ids(warehouses, manual_warehouses)
+    rows: list[dict[str, str]] = []
+    for to_warehouse in warehouse_ids:
+        to_pool = _warehouse_interchangeability_pool(to_warehouse)
+        for from_warehouse in warehouse_ids:
+            if to_warehouse == from_warehouse:
+                continue
+            if to_pool == _warehouse_interchangeability_pool(from_warehouse):
+                continue
+            rows.append(
+                {
+                    "Secondary TO": to_warehouse,
+                    "Secondary FROM": from_warehouse,
+                    "Cross TO": to_warehouse,
+                    "Cross FROM": from_warehouse,
+                    "Primary TO": "",
+                }
+            )
+    if not rows:
+        return pd.DataFrame(columns=columns)
+    out = pd.DataFrame(rows)
+    for column in columns:
+        if column not in out.columns:
+            out[column] = ""
+    return out[columns].drop_duplicates().reset_index(drop=True)
+
+
+def build_warehouse_exclusion_evidence(
+    warehouses: pd.DataFrame,
+    manual_warehouses: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    warehouse_ids = _warehouse_exclusion_ids(warehouses, manual_warehouses)
+    pool_members = {
+        pool_id: sorted(members)
+        for pool_id, members in WAREHOUSE_INTERCHANGEABILITY_POOLS.items()
+        if any(member in warehouse_ids for member in members)
+    }
+    rows = []
+    for warehouse_id in warehouse_ids:
+        pool = _warehouse_interchangeability_pool(warehouse_id)
+        rows.append(
+            {
+                "warehouseId": warehouse_id,
+                "interchangeabilityPool": pool,
+                "poolMembersPresent": ", ".join(pool_members.get(pool, [warehouse_id])),
+                "decision": "Can share stock only with warehouses in the same pool.",
+            }
+        )
+    return pd.DataFrame(
+        rows,
+        columns=["warehouseId", "interchangeabilityPool", "poolMembersPresent", "decision"],
+    )
+
+
+def _warehouse_exclusion_ids(
+    warehouses: pd.DataFrame,
+    manual_warehouses: pd.DataFrame | None = None,
+) -> list[str]:
+    frames: list[pd.Series] = []
+    if not warehouses.empty:
+        frames.append(_first_col(warehouses, ["WarehouseCode", "warehouseId", "warehouseCode"]).map(_clean_text))
+    if manual_warehouses is not None and not manual_warehouses.empty:
+        frames.append(_first_col(manual_warehouses, ["warehouseId", "WarehouseCode", "warehouseCode"]).map(_clean_text))
+    if not frames:
+        return []
+    ids = pd.concat(frames, ignore_index=True).astype(str).str.strip()
+    ids = ids[ids.ne("")]
+    if ids.empty:
+        return []
+    work = pd.DataFrame({"warehouseId": ids})
+    work["warehouseKey"] = work["warehouseId"].str.upper()
+    work = work[~_excluded_warehouse_mask(work["warehouseId"])]
+    work = work.drop_duplicates(subset=["warehouseKey"], keep="first")
+    return sorted(work["warehouseId"].tolist(), key=lambda value: value.upper())
+
+
+def _warehouse_interchangeability_pool(warehouse_id: object) -> str:
+    key = _clean_text(warehouse_id).upper()
+    for pool_id, members in WAREHOUSE_INTERCHANGEABILITY_POOLS.items():
+        if key in {member.upper() for member in members}:
+            return pool_id
+    return f"warehouse:{key}"
 
 
 def build_warehouse_manual_evidence(manual_warehouses: pd.DataFrame) -> pd.DataFrame:

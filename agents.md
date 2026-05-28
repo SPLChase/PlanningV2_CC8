@@ -132,7 +132,7 @@ This repo is for onboarding CoCre8 data into the external Planning V2 Excel/CSV 
   - `Yields.csv`: means expected output/uses or average years before breakdown; not for MVP.
   - `Nodes.csv`: umbrella for regional warehouse/address hierarchy; not for MVP.
   - `ActionGroups.csv`: technician/action group by region; not for MVP.
-  - `WarehouseExclusions.csv`: no exclusions to start with, so an empty upload is intentional.
+  - `WarehouseExclusions.csv`: generate warehouse-to-warehouse stock-pooling exclusions. FUJITSU/FUJ CT/FSCGREEN/FSCGRNCT share stock, the Massmart warehouses share stock, and the Royal Swazi warehouses share stock; all other cross-pool warehouse pairs are excluded.
 
 ## Workbook / Spreadsheet Generation
 

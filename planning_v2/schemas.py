@@ -98,7 +98,7 @@ TEMPLATE_OBJECT_DECISIONS = {
     "WarehouseExclusions": {
         "status": "PASS",
         "readiness": "Ready",
-        "notes": "Chris feedback: no warehouse exclusions to start with; empty upload is intentional.",
+        "notes": "Warehouse-to-warehouse stock-pooling exclusions generated from CoCre8 interchangeability groups.",
     },
 }
 
