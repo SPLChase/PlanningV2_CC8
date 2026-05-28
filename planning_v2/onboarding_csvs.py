@@ -36,6 +36,7 @@ POPULATED_TEMPLATE_FIELDS = {
         "isBranchStockable": "Business rule: Y for all CoCre8 stock",
         "productClass": "Hosted Altsgen batch API: broad rollup from canonical_description",
         "productType": "Hosted Altsgen batch API: canonical_description by actual PartNumber",
+        "costCategory": "Approved CoCre8 cost bands A-F from SPI-derived CoCre8 cost price",
         "isKit": "Business rule: Y when description, productType, or partType contains the word KIT; otherwise N",
         "isObsolete": "Business rule: N for all CoCre8 stock for now",
         "isTool": "Business rule: Y only for parts 1531813 and 1534363; otherwise N",
@@ -176,7 +177,6 @@ OUT_OF_SCOPE_TEMPLATE_FIELDS = {
     ("PartsUsage", "resolvedDateTime"),
     ("PartsUsage", "relCompanyId"),
     ("PartsUsage", "assignedPersonCode"),
-    ("Parts", "costCategory"),
     ("Parts", "isService"),
     ("Parts", "isSmallPart"),
     ("PurchaseOrders", "customerId"),
@@ -232,6 +232,15 @@ WAREHOUSE_INTERCHANGEABILITY_POOLS = {
     "massmart": {"FUJMSM C", "FUJMSM J", "FUJMSVCJ"},
     "royal_swazi": {"FUJ RSSC", "FUJSWBAN"},
 }
+
+APPROVED_COST_CATEGORY_BANDS = [
+    ("A", 58.70),
+    ("B", 165.65),
+    ("C", 282.98),
+    ("D", 441.62),
+    ("E", 900.01),
+    ("F", float("inf")),
+]
 
 
 def _read_csv(path: Path) -> pd.DataFrame:
@@ -978,6 +987,16 @@ def _spi_cocre8_cost_lookup(spi: pd.DataFrame) -> dict[str, float]:
     return {part: row["CoCre8Cost"] for part, row in _latest_cost_rows(records).items()}
 
 
+def _cost_category(value: object) -> str:
+    number = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    if pd.isna(number) or float(number) <= 0:
+        return ""
+    for category, upper_bound in APPROVED_COST_CATEGORY_BANDS:
+        if float(number) <= upper_bound:
+            return category
+    return ""
+
+
 def _spi_cost_records(spi: pd.DataFrame) -> pd.DataFrame:
     columns = ["PartKey", "CoCre8Cost", "SourceDate", "SourceFile"]
     if spi.empty or "ListPrice" not in spi.columns:
@@ -1184,6 +1203,7 @@ def build_template_parts(
     part_type_by_part = _part_type_lookup(altsgen_evidence)
     product_type_by_part = _canonical_description_lookup(altsgen_evidence)
     product_class_by_part = _product_class_lookup(altsgen_evidence)
+    cost_by_part = _spi_cocre8_cost_lookup(spi)
     out = _blank_template(columns, len(parts))
     item_keys = _col(parts, "ItemNo").map(_part_key)
     main_alt = item_keys.map(main_alt_by_part).fillna("")
@@ -1215,6 +1235,8 @@ def build_template_parts(
     if "productType" in out.columns:
         out["productType"] = item_keys.map(product_type_by_part).fillna("")
         out["productType"] = out["productType"].where(out["productType"].astype(str).str.strip().ne(""), "Unknown Component")
+    if "costCategory" in out.columns:
+        out["costCategory"] = item_keys.map(cost_by_part).map(_cost_category)
     if "isObsolete" in out.columns:
         out["isObsolete"] = "N"
     if "isExcludeFromReplenishment" in out.columns:

@@ -14,6 +14,7 @@ from planning_v2.onboarding_csvs import (
     build_template_parts_usage_from_issue_tracker,
     build_template_purchase_orders,
     build_template_service_orders,
+    _cost_category,
     build_template_addresses,
     build_template_customers,
     build_template_warehouses,
@@ -391,6 +392,32 @@ class OnboardingCsvTests(unittest.TestCase):
         self.assertEqual(out.loc[0, "isPrimary"], "True")
         self.assertEqual(out.loc[1, "isPrimary"], "False")
         self.assertEqual(out.loc[1, "primaryPartNumber"], "34076947")
+
+    def test_cost_category_uses_approved_co_cre8_cost_bands(self) -> None:
+        self.assertEqual(_cost_category("0.01"), "A")
+        self.assertEqual(_cost_category("58.70"), "A")
+        self.assertEqual(_cost_category("58.71"), "B")
+        self.assertEqual(_cost_category("165.65"), "B")
+        self.assertEqual(_cost_category("282.98"), "C")
+        self.assertEqual(_cost_category("441.62"), "D")
+        self.assertEqual(_cost_category("900.01"), "E")
+        self.assertEqual(_cost_category("900.02"), "F")
+        self.assertEqual(_cost_category("0"), "")
+
+    def test_template_parts_populates_cost_category_from_spi_cost(self) -> None:
+        parts = pd.DataFrame({"ItemNo": ["A1", "B2", "C3"], "ItemDescription": ["A", "B", "C"]})
+        spi = pd.DataFrame(
+            {
+                "PartNumber": ["A1", "B2"],
+                "Material": ["", ""],
+                "ListPrice": ["81.53", "1250.02"],
+                "SourceDate": ["2026-05-01", "2026-05-01"],
+            }
+        )
+
+        out = build_template_parts(parts, ["PartNumber", "costCategory"], spi)
+
+        self.assertEqual(list(out["costCategory"]), ["A", "E", ""])
 
     def test_template_parts_applies_confirmed_co_cre8_defaults(self) -> None:
         parts = pd.DataFrame(
