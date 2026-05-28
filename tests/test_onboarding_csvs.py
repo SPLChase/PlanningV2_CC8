@@ -20,6 +20,7 @@ from planning_v2.onboarding_csvs import (
     build_template_vendors,
     build_template_inventory_transfers,
     filter_active_warehouses,
+    filter_excluded_warehouse_sources,
     build_stock_detail,
     parse_customer_sla,
     validate_template_outputs,
@@ -278,6 +279,28 @@ class OnboardingCsvTests(unittest.TestCase):
 
         self.assertEqual(list(filtered_inventory["WarehouseCode"]), ["ACTIVE"])
         self.assertEqual(list(filtered_warehouses["WarehouseCode"]), ["ACTIVE"])
+
+    def test_excluded_choice_and_mxt_warehouses_are_removed_from_sources(self) -> None:
+        warehouses = pd.DataFrame(
+            {
+                "WarehouseCode": ["FUJITSU", "CHLJHB", "CHOICE", "GCJRMA", "MXT"],
+                "WarehouseName": ["Main", "Choice Logistics Main", "Choice Logistics Warehouse", "Choice RMA Warehouse", "Maxtec Waehouse"],
+            }
+        )
+        inventory = pd.DataFrame({"WarehouseCode": ["FUJITSU", "CHLCT", "MXT"], "ItemNo": ["A", "B", "C"]})
+        usage = pd.DataFrame({"WarehouseCode": ["FUJITSU", "CHOICE"], "ItemNo": ["A", "B"]})
+        purchase_orders = pd.DataFrame({"ToWarehouseId": ["FUJITSU", "CHLJHB", "MXT"], "PartNumber": ["A", "B", "C"]})
+        stock_flow = pd.DataFrame({"Whse": ["FUJITSU", "GCJRMA"], "Item No.": ["A", "B"]})
+        manual = pd.DataFrame({"warehouseId": ["FUJITSU", "CHLJHB"], "warehouseDescription": ["Main", "Choice Logistics Main"]})
+
+        filtered = filter_excluded_warehouse_sources(warehouses, inventory, usage, purchase_orders, stock_flow, manual)
+
+        self.assertEqual(list(filtered[0]["WarehouseCode"]), ["FUJITSU"])
+        self.assertEqual(list(filtered[1]["WarehouseCode"]), ["FUJITSU"])
+        self.assertEqual(list(filtered[2]["WarehouseCode"]), ["FUJITSU"])
+        self.assertEqual(list(filtered[3]["ToWarehouseId"]), ["FUJITSU"])
+        self.assertEqual(list(filtered[4]["Whse"]), ["FUJITSU"])
+        self.assertEqual(list(filtered[5]["warehouseId"]), ["FUJITSU"])
 
     def test_template_warehouses_maps_manual_answers_and_inverts_obsolete_status(self) -> None:
         warehouses = pd.DataFrame({"WarehouseCode": ["WH1", "WH2"], "WarehouseName": ["Main", "Old"]})

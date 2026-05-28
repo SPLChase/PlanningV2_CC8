@@ -199,6 +199,10 @@ ROW_REQUIRED_TEMPLATE_FIELDS = {
     ],
 }
 
+EXCLUDED_WAREHOUSE_CODES = {"CHOICE", "GCJRMA", "MXT"}
+EXCLUDED_WAREHOUSE_PREFIXES = ("CHL",)
+EXCLUDED_WAREHOUSE_NAME_PATTERNS = ("CHOICE LOGISTICS", "CHOICE RMA", "MAXTEC")
+
 
 def _read_csv(path: Path) -> pd.DataFrame:
     if not path.exists():
@@ -235,6 +239,18 @@ def read_warehouse_location_lookup(cfg: PlanningConfig) -> pd.DataFrame:
     combined = pd.concat(frames, ignore_index=True, sort=False).fillna("")
     combined["WarehouseKey"] = combined["WarehouseCode"].str.upper().str.strip()
     return combined.drop_duplicates(subset=["WarehouseKey"], keep="first").reset_index(drop=True)
+
+
+def read_altsgen_part_type_evidence(output_parent: Path) -> pd.DataFrame:
+    candidates = [
+        output_parent / "review_evidence" / "Altsgen_PartType_Evidence.csv",
+        Path("data") / "output" / "review_evidence" / "Altsgen_PartType_Evidence.csv",
+    ]
+    for path in candidates:
+        frame = _read_csv(path)
+        if not frame.empty:
+            return frame
+    return pd.DataFrame()
 
 
 def _write_csv(df: pd.DataFrame, path: Path) -> Path:
@@ -295,7 +311,15 @@ def generate_onboarding_csvs(cfg: PlanningConfig, out_dir: Path) -> list[Path]:
     issue_tracker = read_issue_tracker(cfg.issue_tracker_csv)
     manual_warehouses = read_manual_warehouse_fill(cfg)
     warehouse_locations = read_warehouse_location_lookup(cfg)
-    altsgen_part_type_evidence = _read_csv(out_dir.parent / "review_evidence" / "Altsgen_PartType_Evidence.csv")
+    altsgen_part_type_evidence = read_altsgen_part_type_evidence(out_dir.parent)
+    warehouses, inventory, usage, purchase_orders, stock_flow, manual_warehouses = filter_excluded_warehouse_sources(
+        warehouses,
+        inventory,
+        usage,
+        purchase_orders,
+        stock_flow,
+        manual_warehouses,
+    )
 
     written: list[Path] = []
     templates = template_columns(cfg.samples_dir)
@@ -616,6 +640,43 @@ def filter_active_warehouses(
     else:
         filtered_warehouses = warehouses[warehouses["WarehouseCode"].astype(str).str.strip().isin(active)].copy().reset_index(drop=True)
     return filtered_inventory, filtered_warehouses
+
+
+def filter_excluded_warehouse_sources(
+    warehouses: pd.DataFrame,
+    inventory: pd.DataFrame,
+    usage: pd.DataFrame,
+    purchase_orders: pd.DataFrame,
+    stock_flow: pd.DataFrame,
+    manual_warehouses: pd.DataFrame | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    return (
+        _filter_frame_excluded_warehouses(warehouses, "WarehouseCode", "WarehouseName"),
+        _filter_frame_excluded_warehouses(inventory, "WarehouseCode"),
+        _filter_frame_excluded_warehouses(usage, "WarehouseCode"),
+        _filter_frame_excluded_warehouses(purchase_orders, "ToWarehouseId"),
+        _filter_frame_excluded_warehouses(stock_flow, "Whse"),
+        _filter_frame_excluded_warehouses(manual_warehouses if manual_warehouses is not None else pd.DataFrame(), "warehouseId", "warehouseDescription"),
+    )
+
+
+def _filter_frame_excluded_warehouses(df: pd.DataFrame, code_column: str, name_column: str | None = None) -> pd.DataFrame:
+    if df.empty or code_column not in df.columns:
+        return df
+    mask = _excluded_warehouse_mask(df[code_column], df[name_column] if name_column and name_column in df.columns else None)
+    return df[~mask].copy().reset_index(drop=True)
+
+
+def _excluded_warehouse_mask(code_values: pd.Series, name_values: pd.Series | None = None) -> pd.Series:
+    codes = code_values.map(_clean_text).str.upper()
+    mask = codes.isin(EXCLUDED_WAREHOUSE_CODES)
+    for prefix in EXCLUDED_WAREHOUSE_PREFIXES:
+        mask = mask | codes.str.startswith(prefix)
+    if name_values is not None:
+        names = name_values.map(_clean_text).str.upper()
+        for pattern in EXCLUDED_WAREHOUSE_NAME_PATTERNS:
+            mask = mask | names.str.contains(re.escape(pattern), regex=True)
+    return mask
 
 
 def _read_stock_audit(path: Path) -> pd.DataFrame:
