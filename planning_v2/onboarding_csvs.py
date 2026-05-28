@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import shutil
 import zlib
 from datetime import date
 from pathlib import Path
@@ -179,6 +180,23 @@ OUT_OF_SCOPE_TEMPLATE_FIELDS = {
 
 ROW_REQUIRED_TEMPLATE_FIELDS = {
     "PartCost": ["partCode", "cost", "currencyCode", "averageCost"],
+    "Parts": [
+        "PartNumber",
+        "isPrimary",
+        "primaryPartNumber",
+        "description",
+        "isBootStockable",
+        "isBranchStockable",
+        "productClass",
+        "productType",
+        "partType",
+        "isKit",
+        "isObsolete",
+        "isTool",
+        "isExcludeFromReplenishment",
+        "purchaseLeadTimeDays",
+        "isCritical",
+    ],
 }
 
 
@@ -304,6 +322,7 @@ def generate_onboarding_csvs(cfg: PlanningConfig, out_dir: Path) -> list[Path]:
 
     validation = validate_template_outputs(csv_dir, outputs, templates)
     written.append(_write_csv(validation, out_dir.parent / "validation_summary.csv"))
+    written.extend(sync_upload_ready_package(csv_dir, outputs, validation, out_dir.parent / "upload_ready"))
     written.extend(
         write_review_evidence(
             out_dir.parent / "review_evidence",
@@ -316,6 +335,45 @@ def generate_onboarding_csvs(cfg: PlanningConfig, out_dir: Path) -> list[Path]:
             combined_spi_costs,
         )
     )
+    return written
+
+
+def sync_upload_ready_package(
+    csv_dir: Path,
+    outputs: dict[str, pd.DataFrame],
+    validation: pd.DataFrame,
+    ready_dir: Path,
+) -> list[Path]:
+    """Write a clean upload package containing only current PASS template CSVs."""
+
+    ready_dir.mkdir(parents=True, exist_ok=True)
+    for child in ready_dir.glob("*.csv"):
+        child.unlink()
+    for child in ready_dir.glob("*.txt"):
+        child.unlink()
+
+    written: list[Path] = []
+    pass_objects = set(
+        validation.loc[validation["Status"].astype(str).str.upper().eq("PASS"), "Object"].astype(str)
+    )
+    for object_name in sorted(pass_objects):
+        source = csv_dir / f"{object_name}.csv"
+        if not source.exists() or object_name not in outputs:
+            continue
+        destination = ready_dir / source.name
+        shutil.copy2(source, destination)
+        written.append(destination)
+
+    manifest = validation[validation["Object"].astype(str).isin(pass_objects)].copy()
+    written.append(_write_csv(manifest, ready_dir / "upload_manifest.csv"))
+    readme = ready_dir / "README_DO_NOT_USE_TEMPLATE_ONBOARDING_CSVS.txt"
+    readme.write_text(
+        "Use the CSV files in this upload_ready folder for Planning V2 ingestion.\n"
+        "Do not use data/output/template_onboarding_csvs; that folder contains stale header/sample outputs from early exploration.\n"
+        "Generated from live SAP Service Layer plus approved local exception sources.\n",
+        encoding="utf-8",
+    )
+    written.append(readme)
     return written
 
 
@@ -928,15 +986,17 @@ def build_template_parts(
             _col(parts, "ItemDescription").astype(str).str.strip().ne(""),
             _col(parts, "DisplayDescription"),
         )
-        out["description"] = description.where(description.astype(str).str.strip().ne(""), "null")
+        out["description"] = description.where(description.astype(str).str.strip().ne(""), "No Description")
     if "isBootStockable" in out.columns:
         out["isBootStockable"] = "N"
     if "isBranchStockable" in out.columns:
         out["isBranchStockable"] = "Y"
     if "productClass" in out.columns:
         out["productClass"] = item_keys.map(product_class_by_part).fillna("")
+        out["productClass"] = out["productClass"].where(out["productClass"].astype(str).str.strip().ne(""), "OTHER")
     if "productType" in out.columns:
         out["productType"] = item_keys.map(product_type_by_part).fillna("")
+        out["productType"] = out["productType"].where(out["productType"].astype(str).str.strip().ne(""), "Unknown Component")
     if "isObsolete" in out.columns:
         out["isObsolete"] = "N"
     if "isExcludeFromReplenishment" in out.columns:
@@ -948,8 +1008,9 @@ def build_template_parts(
         out["isCritical"] = "Yes"
     if "partType" in out.columns:
         out["partType"] = item_keys.map(part_type_by_part).fillna("")
-    kit_product_type = item_keys.map(product_type_by_part).fillna("")
-    kit_part_type = item_keys.map(part_type_by_part).fillna("")
+        out["partType"] = out["partType"].where(out["partType"].astype(str).str.strip().ne(""), "unknown_component")
+    kit_product_type = out["productType"] if "productType" in out.columns else item_keys.map(product_type_by_part).fillna("")
+    kit_part_type = out["partType"] if "partType" in out.columns else item_keys.map(part_type_by_part).fillna("")
     if "isKit" in out.columns:
         out["isKit"] = _kit_flags(out["description"] if "description" in out.columns else _col(parts, "ItemDescription"), kit_product_type, kit_part_type)
     if "isTool" in out.columns:
@@ -986,7 +1047,7 @@ def _build_template_parts_usage_from_sap_delivery_notes(
     order_number = call_number.where(call_number.astype(str).str.strip().ne(""), fallback_order)
     comments = dn["Comments"]
     serial = comments.map(lambda value: _parse_labeled_value(value, r"Serial\s*(?:number|nr|no)?"))
-    customer = comments.map(lambda value: _parse_labeled_value(value, r"Customer"))
+    customer = dn.apply(_customer_name_from_delivery_note_row, axis=1)
     helpdesk = _helpdesk_by_call(issue_tracker)
     helpdesk_rows = order_number.map(lambda value: helpdesk.get(_call_match_key(value), {}))
 
@@ -1311,7 +1372,16 @@ def build_template_part_types(altsgen_evidence: pd.DataFrame, columns: list[str]
         & source["partType"].str.lower().ne("unknown")
     ].copy()
     if source.empty:
-        return pd.DataFrame(columns=columns)
+        source = pd.DataFrame([{"partType": "unknown_component", "partTypeDescription": "Unknown Component", "isReworkable": "NO"}])
+    elif "unknown_component" not in set(source["partType"].astype(str).str.strip()):
+        source = pd.concat(
+            [
+                source,
+                pd.DataFrame([{"partType": "unknown_component", "partTypeDescription": "Unknown Component", "isReworkable": "NO"}]),
+            ],
+            ignore_index=True,
+            sort=False,
+        )
 
     source = source.drop_duplicates(subset=["partType"], keep="last").sort_values("partType").reset_index(drop=True)
     out = _blank_template(columns, len(source))

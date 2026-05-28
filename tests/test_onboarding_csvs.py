@@ -382,7 +382,7 @@ class OnboardingCsvTests(unittest.TestCase):
         self.assertEqual(out.loc[0, "isExcludeFromReplenishment"], "N")
         self.assertEqual(out.loc[0, "purchaseLeadTimeDays"], 180)
         self.assertEqual(out.loc[0, "isCritical"], "Yes")
-        self.assertEqual(out.loc[1, "description"], "null")
+        self.assertEqual(out.loc[1, "description"], "No Description")
         self.assertEqual(out.loc[1, "isKit"], "N")
         self.assertEqual(out.loc[1, "isTool"], "N")
         self.assertEqual(out.loc[1, "purchaseLeadTimeDays"], 3)
@@ -432,8 +432,9 @@ class OnboardingCsvTests(unittest.TestCase):
         self.assertEqual(out.loc[0, "productClass"], "STORAGE")
         self.assertEqual(out.loc[1, "productType"], "Fujitsu Laptop Motherboard")
         self.assertEqual(out.loc[1, "productClass"], "BOARD")
-        self.assertEqual(out.loc[2, "partType"], "")
-        self.assertEqual(out.loc[2, "productType"], "")
+        self.assertEqual(out.loc[2, "partType"], "unknown_component")
+        self.assertEqual(out.loc[2, "productType"], "Unknown Component")
+        self.assertEqual(out.loc[2, "productClass"], "OTHER")
 
     def test_template_parts_usage_uses_negative_dn_rows_only(self) -> None:
         usage = pd.DataFrame(
@@ -803,10 +804,13 @@ class OnboardingCsvTests(unittest.TestCase):
 
         out = build_template_part_types(evidence, ["partType", "partTypeDescription", "isReworkable"])
 
-        self.assertEqual(len(out), 1)
+        self.assertEqual(len(out), 2)
         self.assertEqual(out.loc[0, "partType"], "hdd_sas_2_5_sff")
         self.assertEqual(out.loc[0, "partTypeDescription"], "Duplicate")
         self.assertEqual(out.loc[0, "isReworkable"], "NO")
+        self.assertEqual(out.loc[1, "partType"], "unknown_component")
+        self.assertEqual(out.loc[1, "partTypeDescription"], "Unknown Component")
+        self.assertEqual(out.loc[1, "isReworkable"], "NO")
 
     def test_validation_flags_missing_confirmed_csv_columns(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
