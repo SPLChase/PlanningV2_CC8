@@ -47,7 +47,7 @@ POPULATED_TEMPLATE_FIELDS = {
     },
     "Warehouses": {
         "warehouseId": "SAP Service Layer Warehouses:WarehouseCode",
-        "addressId": "Manual fill workbook:addressId; currently warehouse code per user mapping",
+        "addressId": "Business rule: FUJ CT shared-address warehouses use FUJ CT; all other CoCre8 warehouses use FUJITSU for v1 location planning",
         "returnWarehouseId": "Manual fill workbook:returnWarehouseId",
         "supplyWarehouseId": "Manual fill workbook:supplyWarehouseId",
         "warehouseTypeId": "Manual fill workbook:warehouseTypeId",
@@ -232,6 +232,53 @@ WAREHOUSE_INTERCHANGEABILITY_POOLS = {
     "massmart": {"FUJMSM C", "FUJMSM J", "FUJMSVCJ"},
     "royal_swazi": {"FUJ RSSC", "FUJSWBAN"},
 }
+
+FUJ_CT_ADDRESS_WAREHOUSES = {
+    "BNI CT",
+    "FSCGRNCT",
+    "FUJ CT",
+    "FUJ IEC",
+    "FUJOM CT",
+    "FUJSANCT",
+    "FUJWO CT",
+}
+
+WAREHOUSE_ADDRESS_ROWS = [
+    {
+        "externalAddressId": "FUJITSU",
+        "customerExternalId": "",
+        "CustomerName": "FUJITSU warehouse",
+        "RawShipToAddress": "5 Star Junction\nCnr Beyers Naude & Juice St\nHoneydew, Johannesburg",
+        "addressLine1": "5 Star Junction",
+        "addressLine2": "Cnr Beyers Naude & Juice St",
+        "addressLine3": "Honeydew, Johannesburg",
+        "city": "Johannesburg",
+        "stateProvince": "Gauteng",
+        "countryCode": "ZA",
+        "latitude": "-26.0739306",
+        "longitude": "27.9220694",
+        "timeZone": "South Africa Standard Time",
+        "WarehouseCode": "FUJITSU",
+        "LocationEvidence": "User-provided warehouse address and GPS coordinates",
+    },
+    {
+        "externalAddressId": "FUJ CT",
+        "customerExternalId": "",
+        "CustomerName": "FUJ CT warehouse",
+        "RawShipToAddress": "Unit L4, Centurion Business Park\nCnr Bosmansdam & Democracy Road\nMontague Gardens, Cape Town",
+        "addressLine1": "Unit L4, Centurion Business Park",
+        "addressLine2": "Cnr Bosmansdam & Democracy Road",
+        "addressLine3": "Montague Gardens, Cape Town",
+        "city": "Cape Town",
+        "stateProvince": "Western Cape",
+        "countryCode": "ZA",
+        "latitude": "-33.8795028",
+        "longitude": "18.5079583",
+        "timeZone": "South Africa Standard Time",
+        "WarehouseCode": "FUJ CT",
+        "LocationEvidence": "User-provided warehouse address and GPS coordinates",
+    },
+]
 
 APPROVED_COST_CATEGORY_BANDS = [
     ("A", 58.70),
@@ -2068,6 +2115,8 @@ def build_template_warehouses(
             out["warehouseStatusId"] = ""
             known = obsolete.isin(["Y", "N"])
             out.loc[known, "warehouseStatusId"] = obsolete.loc[known].map({"Y": "N", "N": "Y"})
+    if "addressId" in out.columns:
+        out["addressId"] = warehouse_ids.map(_warehouse_address_id)
     return out.drop_duplicates(subset=["warehouseId"], keep="first") if "warehouseId" in out.columns else out
 
 
@@ -2160,6 +2209,13 @@ def _warehouse_interchangeability_pool(warehouse_id: object) -> str:
         if key in {member.upper() for member in members}:
             return pool_id
     return f"warehouse:{key}"
+
+
+def _warehouse_address_id(warehouse_id: object) -> str:
+    key = _clean_text(warehouse_id).upper()
+    if key in {warehouse.upper() for warehouse in FUJ_CT_ADDRESS_WAREHOUSES}:
+        return "FUJ CT"
+    return "FUJITSU"
 
 
 def build_warehouse_manual_evidence(manual_warehouses: pd.DataFrame) -> pd.DataFrame:
@@ -2342,7 +2398,14 @@ def build_template_addresses(
     columns: list[str],
     warehouse_locations: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    source = _address_rows_from_sap_delivery_notes(usage, warehouse_locations)
+    source = pd.concat(
+        [
+            _address_rows_from_sap_delivery_notes(usage, warehouse_locations),
+            _warehouse_address_rows(),
+        ],
+        ignore_index=True,
+        sort=False,
+    ).fillna("")
     if source.empty:
         return pd.DataFrame(columns=columns)
     out = _blank_template(columns, len(source))
@@ -2366,6 +2429,27 @@ def build_template_addresses(
     if "externalAddressId" in out.columns:
         return out.drop_duplicates(subset=["externalAddressId"], keep="first").reset_index(drop=True)
     return out.drop_duplicates(keep="first").reset_index(drop=True)
+
+
+def _warehouse_address_rows() -> pd.DataFrame:
+    columns = [
+        "externalAddressId",
+        "customerExternalId",
+        "CustomerName",
+        "RawShipToAddress",
+        "addressLine1",
+        "addressLine2",
+        "addressLine3",
+        "city",
+        "stateProvince",
+        "countryCode",
+        "latitude",
+        "longitude",
+        "timeZone",
+        "WarehouseCode",
+        "LocationEvidence",
+    ]
+    return pd.DataFrame(WAREHOUSE_ADDRESS_ROWS, columns=columns)
 
 
 def _address_rows_from_sap_delivery_notes(

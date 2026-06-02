@@ -114,17 +114,17 @@ class OnboardingCsvTests(unittest.TestCase):
             warehouse_locations,
         )
 
-        self.assertEqual(len(out), 1)
-        self.assertTrue(out.loc[0, "externalAddressId"].startswith("CC8ADDR-"))
-        self.assertEqual(out.loc[0, "customerExternalId"], "CC8CUST-3CC274F6")
-        self.assertEqual(out.loc[0, "addressLine1"], "Kelvin to collect")
-        self.assertEqual(out.loc[0, "addressLine2"], "SOUTH AFRICA")
-        self.assertEqual(out.loc[0, "addressLine3"], "")
-        self.assertEqual(out.loc[0, "city"], "Cape Town")
-        self.assertEqual(out.loc[0, "stateProvince"], "Western Cape")
-        self.assertEqual(out.loc[0, "countryCode"], "ZA")
-        self.assertEqual(out.loc[0, "timeZone"], "South Africa Standard Time")
-        self.assertEqual(out.loc[0, "nodeId"], "")
+        customer_rows = out[out["customerExternalId"].eq("CC8CUST-3CC274F6")].reset_index(drop=True)
+        self.assertEqual(len(customer_rows), 1)
+        self.assertTrue(customer_rows.loc[0, "externalAddressId"].startswith("CC8ADDR-"))
+        self.assertEqual(customer_rows.loc[0, "addressLine1"], "Kelvin to collect")
+        self.assertEqual(customer_rows.loc[0, "addressLine2"], "SOUTH AFRICA")
+        self.assertEqual(customer_rows.loc[0, "addressLine3"], "")
+        self.assertEqual(customer_rows.loc[0, "city"], "Cape Town")
+        self.assertEqual(customer_rows.loc[0, "stateProvince"], "Western Cape")
+        self.assertEqual(customer_rows.loc[0, "countryCode"], "ZA")
+        self.assertEqual(customer_rows.loc[0, "timeZone"], "South Africa Standard Time")
+        self.assertEqual(customer_rows.loc[0, "nodeId"], "")
 
     def test_template_addresses_marks_rssc_as_swaziland(self) -> None:
         usage = pd.DataFrame(
@@ -159,6 +159,33 @@ class OnboardingCsvTests(unittest.TestCase):
         self.assertEqual(out.loc[0, "addressLine1"], "Line 1")
         self.assertEqual(out.loc[0, "addressLine2"], "Line 2")
         self.assertEqual(out.loc[0, "addressLine3"], "Line 3 | Line 4")
+
+    def test_template_addresses_includes_physical_warehouse_addresses(self) -> None:
+        out = build_template_addresses(
+            pd.DataFrame(),
+            [
+                "externalAddressId",
+                "customerExternalId",
+                "addressLine1",
+                "addressLine2",
+                "addressLine3",
+                "city",
+                "stateProvince",
+                "countryCode",
+                "latitude",
+                "longitude",
+                "timeZone",
+            ],
+        )
+        by_id = out.set_index("externalAddressId")
+
+        self.assertEqual(by_id.loc["FUJITSU", "addressLine1"], "5 Star Junction")
+        self.assertEqual(by_id.loc["FUJITSU", "addressLine2"], "Cnr Beyers Naude & Juice St")
+        self.assertEqual(by_id.loc["FUJITSU", "city"], "Johannesburg")
+        self.assertEqual(by_id.loc["FUJITSU", "latitude"], "-26.0739306")
+        self.assertEqual(by_id.loc["FUJ CT", "addressLine1"], "Unit L4, Centurion Business Park")
+        self.assertEqual(by_id.loc["FUJ CT", "city"], "Cape Town")
+        self.assertEqual(by_id.loc["FUJ CT", "longitude"], "18.5079583")
 
     def test_stock_detail_numeric_fields_are_coerced(self) -> None:
         inventory = pd.DataFrame(
@@ -324,11 +351,11 @@ class OnboardingCsvTests(unittest.TestCase):
         self.assertEqual(list(filtered[5]["warehouseId"]), ["FUJITSU"])
 
     def test_template_warehouses_maps_manual_answers_and_inverts_obsolete_status(self) -> None:
-        warehouses = pd.DataFrame({"WarehouseCode": ["WH1", "WH2"], "WarehouseName": ["Main", "Old"]})
+        warehouses = pd.DataFrame({"WarehouseCode": ["FUJITSU", "FUJ CT"], "WarehouseName": ["Main", "Old"]})
         manual = pd.DataFrame(
             {
-                "warehouseId": ["WH1", "WH2"],
-                "addressId": ["WH1", "WH2"],
+                "warehouseId": ["FUJITSU", "FUJ CT"],
+                "addressId": ["OLD1", "OLD2"],
                 "returnWarehouseId": ["RET", "RET"],
                 "supplyWarehouseId": ["MAIN", ""],
                 "warehouseTypeId": ["CUSTOMER", "VIRTUAL"],
@@ -356,9 +383,27 @@ class OnboardingCsvTests(unittest.TestCase):
             manual,
         )
 
-        self.assertEqual(out.loc[0, "addressId"], "WH1")
+        self.assertEqual(out.loc[0, "addressId"], "FUJITSU")
+        self.assertEqual(out.loc[1, "addressId"], "FUJ CT")
         self.assertEqual(out.loc[0, "warehouseStatusId"], "Y")
         self.assertEqual(out.loc[1, "warehouseStatusId"], "N")
+
+    def test_template_warehouses_maps_shared_physical_addresses(self) -> None:
+        warehouses = pd.DataFrame(
+            {
+                "WarehouseCode": ["FUJITSU", "FSCGREEN", "BNI CT", "FUJSANCT", "FUJMSM J"],
+                "WarehouseName": ["Main JHB", "Green JHB", "BNI CT", "Sanlam CT", "Massmart JHB"],
+            }
+        )
+
+        out = build_template_warehouses(warehouses, ["warehouseId", "addressId", "warehouseDescription"])
+        by_id = out.set_index("warehouseId")
+
+        self.assertEqual(by_id.loc["FUJITSU", "addressId"], "FUJITSU")
+        self.assertEqual(by_id.loc["FSCGREEN", "addressId"], "FUJITSU")
+        self.assertEqual(by_id.loc["FUJMSM J", "addressId"], "FUJITSU")
+        self.assertEqual(by_id.loc["BNI CT", "addressId"], "FUJ CT")
+        self.assertEqual(by_id.loc["FUJSANCT", "addressId"], "FUJ CT")
 
     def test_template_parts_defaults_missing_main_alternative_to_primary(self) -> None:
         parts = pd.DataFrame({"ItemNo": ["A1"], "SPLMaster": ["SPL1"], "ItemDescription": ["Part A"], "DisplayItemNo": ["A1"]})
