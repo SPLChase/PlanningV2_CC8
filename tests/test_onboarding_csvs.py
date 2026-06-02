@@ -777,7 +777,7 @@ class OnboardingCsvTests(unittest.TestCase):
         self.assertEqual(out.loc[0, "Warehouse"], "CC8 - ACER - KHAULEZA - JHB - SPL - OFFSITE")
         self.assertEqual(out.loc[0, "Warehouse Code"], "ACERKH")
 
-    def test_template_service_orders_uses_spares_issued_and_helpdesk_sla(self) -> None:
+    def test_template_service_orders_uses_helpdesk_tickets_and_spares_actual_eta(self) -> None:
         spares = pd.DataFrame(
             {
                 "Cust Ord No": ["S_71919593", "S_71919593", "S_71942838"],
@@ -791,13 +791,14 @@ class OnboardingCsvTests(unittest.TestCase):
         )
         issue_tracker = pd.DataFrame(
             {
-                "Call Number": ["71919593", "71942838"],
-                "Created": ["2026-01-20T16:31:00Z", "2026-01-28T14:03:00Z"],
-                "Status": ["Closed", "Closed"],
-                "SLA": ["8 Hours Recovery 24x7", "NBD response, 9x5"],
-                "DeliveryCity": ["Cape Town", "JHB"],
-                "Customer": ["WCED", "SENWES"],
-                "CustomerNormalized": ["WCED", "Other"],
+                "Call Number": ["71919593", "71942838", "77782146", ""],
+                "Subject": ["", "", "", "ACER Spares || Ticket 72759481 || 00534758"],
+                "Created": ["2026-01-20T16:31:00Z", "2026-01-28T14:03:00Z", "2026-05-25T19:33:38Z", "2026-05-07T08:32:29Z"],
+                "Status": ["Closed", "Closed", "Open", "Closed"],
+                "SLA": ["8 Hours Recovery 24x7", "NBD response, 9x5", "8 Hours Recovery 24x7", "NBD response, 9x5"],
+                "DeliveryCity": ["Cape Town", "JHB", "Unknown", "JHB"],
+                "Customer": ["WCED", "SENWES", "Sanlam", "Department of Justice"],
+                "CustomerNormalized": ["WCED", "Other", "SANLAM", "Other"],
             }
         )
 
@@ -821,7 +822,7 @@ class OnboardingCsvTests(unittest.TestCase):
             issue_tracker,
         )
 
-        self.assertEqual(len(out), 2)
+        self.assertEqual(len(out), 4)
         self.assertEqual(out.loc[0, "orderNumber"], "71919593")
         self.assertEqual(out.loc[0, "RequestID"], "71919593")
         self.assertEqual(out.loc[0, "location"], "Cape Town")
@@ -832,6 +833,11 @@ class OnboardingCsvTests(unittest.TestCase):
         self.assertEqual(out.loc[1, "orderNumber"], "71942838")
         self.assertEqual(out.loc[1, "location"], "JHB")
         self.assertEqual(out.loc[1, "slaResolveClock"], "")
+        self.assertEqual(out.loc[2, "orderNumber"], "77782146")
+        self.assertEqual(out.loc[2, "location"], "SANLAM")
+        self.assertEqual(out.loc[2, "actualEta"], "")
+        self.assertEqual(out.loc[3, "orderNumber"], "72759481")
+        self.assertEqual(out.loc[3, "location"], "JHB")
 
     def test_template_purchase_orders_maps_sap_po_lines_and_receipts(self) -> None:
         source = pd.DataFrame(

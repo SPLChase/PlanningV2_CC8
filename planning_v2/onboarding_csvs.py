@@ -1481,36 +1481,30 @@ def build_template_service_orders(
     columns: list[str],
     issue_tracker: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    if spares_issued.empty:
+    if (issue_tracker is None or issue_tracker.empty) and spares_issued.empty:
         return pd.DataFrame(columns=columns)
-    source = spares_issued.copy()
-    for column in ["Cust Ord No", "Order Date", "Order Time", "Del Date", "Del Time", "Customer ", "Customer Name"]:
-        if column not in source.columns:
-            source[column] = ""
-    source["ServiceCallNumber"] = source["Cust Ord No"].map(_service_call_number)
-    source = source[source["ServiceCallNumber"].astype(str).str.strip().ne("")].copy()
+    delivery_by_call = _spares_actual_eta_by_call(spares_issued)
+    source = _service_order_rows_from_issue_tracker(issue_tracker)
+    if source.empty:
+        source = _service_order_rows_from_spares_issued(spares_issued)
     if source.empty:
         return pd.DataFrame(columns=columns)
 
-    source["OrderDateTimeValue"] = source.apply(lambda row: _report_datetime(row.get("Order Date"), row.get("Order Time")), axis=1)
-    source["DeliveryDateTimeValue"] = source.apply(lambda row: _report_datetime(row.get("Del Date"), row.get("Del Time")), axis=1)
-    helpdesk = _helpdesk_by_call(issue_tracker)
-
     rows: list[dict[str, object]] = []
-    for call_number, group in source.groupby("ServiceCallNumber", sort=False):
-        helpdesk_row = helpdesk.get(_call_match_key(call_number), {})
-        open_dt = _first_datetime(group["OrderDateTimeValue"])
-        helpdesk_created = _parse_datetime_value(helpdesk_row.get("Created", ""))
-        if open_dt is None:
-            open_dt = helpdesk_created
-        actual_eta = _first_datetime(group["DeliveryDateTimeValue"])
-        sla = _clean_text(helpdesk_row.get("SLA"))
+    for match_key, group in source.groupby("CallMatchKey", sort=False):
+        group = group.sort_values("CreatedDateTimeValue", na_position="last").reset_index(drop=True)
+        call_number = _clean_text(group.loc[0, "ServiceCallNumber"])
+        open_dt = _first_datetime(group["CreatedDateTimeValue"])
+        actual_eta = delivery_by_call.get(match_key)
+        if actual_eta is None and "DeliveryDateTimeValue" in group.columns:
+            actual_eta = _first_datetime(group["DeliveryDateTimeValue"])
+        sla = _most_common_nonblank(group.get("SLA", pd.Series(dtype=str)))
         sla_fields = _service_order_sla_fields(open_dt, sla)
         rows.append(
             {
                 "orderNumber": call_number,
                 "RequestID": call_number,
-                "location": _service_order_location(group, helpdesk_row),
+                "location": _service_order_location(group),
                 "actualEta": _format_datetime(actual_eta),
                 "slaEtaClock": sla_fields["slaEtaClock"],
                 "slaResolveClock": sla_fields["slaResolveClock"],
@@ -1526,6 +1520,59 @@ def build_template_service_orders(
     return out.drop_duplicates(subset=["orderNumber"], keep="first").reset_index(drop=True) if "orderNumber" in out.columns else out
 
 
+def _service_order_rows_from_spares_issued(spares_issued: pd.DataFrame) -> pd.DataFrame:
+    if spares_issued.empty:
+        return pd.DataFrame()
+    source = spares_issued.copy()
+    for column in ["Cust Ord No", "Order Date", "Order Time", "Del Date", "Del Time", "Customer ", "Customer Name"]:
+        if column not in source.columns:
+            source[column] = ""
+    source["ServiceCallNumber"] = source["Cust Ord No"].map(_service_call_number)
+    source = source[source["ServiceCallNumber"].astype(str).str.strip().ne("")].copy()
+    if source.empty:
+        return pd.DataFrame()
+    source["CallMatchKey"] = source["ServiceCallNumber"].map(_call_match_key)
+    source["OrderDateTimeValue"] = source.apply(lambda row: _report_datetime(row.get("Order Date"), row.get("Order Time")), axis=1)
+    source["DeliveryDateTimeValue"] = source.apply(lambda row: _report_datetime(row.get("Del Date"), row.get("Del Time")), axis=1)
+    source["CreatedDateTimeValue"] = source["OrderDateTimeValue"]
+    source["SLA"] = ""
+    source["DeliveryCity"] = ""
+    source["CustomerNormalized"] = ""
+    source["Customer"] = source["Customer "]
+    return source
+
+
+def _service_order_rows_from_issue_tracker(issue_tracker: pd.DataFrame | None) -> pd.DataFrame:
+    if issue_tracker is None or issue_tracker.empty:
+        return pd.DataFrame()
+    source = issue_tracker.copy()
+    for column in ["Call Number", "Subject", "Created", "SLA", "DeliveryCity", "CustomerNormalized", "Customer"]:
+        if column not in source.columns:
+            source[column] = ""
+    call_number = source["Call Number"].map(_clean_text)
+    subject_ticket = source["Subject"].map(_ticket_number_from_subject)
+    source["ServiceCallNumber"] = call_number.where(call_number.str.strip().ne(""), subject_ticket)
+    source = source[source["ServiceCallNumber"].astype(str).str.strip().ne("")].copy()
+    if source.empty:
+        return pd.DataFrame()
+    source["CallMatchKey"] = source["ServiceCallNumber"].map(_call_match_key)
+    source = source[source["CallMatchKey"].astype(str).str.strip().ne("")].copy()
+    source["CreatedDateTimeValue"] = source["Created"].map(_parse_datetime_value)
+    return source
+
+
+def _spares_actual_eta_by_call(spares_issued: pd.DataFrame) -> dict[str, datetime]:
+    source = _service_order_rows_from_spares_issued(spares_issued)
+    if source.empty or "DeliveryDateTimeValue" not in source.columns:
+        return {}
+    lookup: dict[str, datetime] = {}
+    for match_key, group in source.groupby("CallMatchKey", sort=False):
+        actual_eta = _first_datetime(group["DeliveryDateTimeValue"])
+        if actual_eta is not None:
+            lookup[match_key] = actual_eta
+    return lookup
+
+
 def _service_call_number(value: object) -> str:
     text = _clean_text(value)
     if not text or text == "-":
@@ -1537,13 +1584,21 @@ def _service_call_number(value: object) -> str:
     return text
 
 
-def _service_order_location(group: pd.DataFrame, helpdesk_row: dict[str, str]) -> str:
-    delivery_city = _clean_text(helpdesk_row.get("DeliveryCity"))
-    if delivery_city and delivery_city.upper() not in {"UNKNOWN", "N/A", "NA"}:
+def _ticket_number_from_subject(value: object) -> str:
+    match = re.search(r"\bTicket\s+(\d{6,})\b", _clean_text(value), flags=re.IGNORECASE)
+    return (match.group(1).lstrip("0") or "0") if match else ""
+
+
+def _service_order_location(group: pd.DataFrame) -> str:
+    delivery_city = _most_common_nonblank(group.get("DeliveryCity", pd.Series(dtype=str)), excluded={"UNKNOWN", "N/A", "NA"})
+    if delivery_city:
         return delivery_city
-    normalized = _clean_text(helpdesk_row.get("CustomerNormalized"))
-    if normalized and normalized.upper() not in {"OTHER", "UNKNOWN", "N/A", "NA"}:
+    normalized = _most_common_nonblank(group.get("CustomerNormalized", pd.Series(dtype=str)), excluded={"OTHER", "UNKNOWN", "N/A", "NA"})
+    if normalized:
         return normalized
+    customer = _most_common_nonblank(group.get("Customer", pd.Series(dtype=str)), excluded={"OTHER", "UNKNOWN", "N/A", "NA"})
+    if customer:
+        return customer
     customer_label = _most_common_text(group.get("Customer ", pd.Series(dtype=str)))
     if customer_label:
         return customer_label
@@ -2788,9 +2843,11 @@ def _most_common_text(values: pd.Series) -> str:
     return str(cleaned.value_counts().idxmax())
 
 
-def _most_common_nonblank(values: pd.Series) -> str:
+def _most_common_nonblank(values: pd.Series, excluded: set[str] | None = None) -> str:
     cleaned = values.map(_clean_text)
     cleaned = cleaned[cleaned.str.strip().ne("")]
+    if excluded:
+        cleaned = cleaned[~cleaned.str.upper().isin({value.upper() for value in excluded})]
     if cleaned.empty:
         return ""
     return str(cleaned.value_counts().idxmax())
