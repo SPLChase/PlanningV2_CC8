@@ -1484,9 +1484,10 @@ def build_template_service_orders(
     if (issue_tracker is None or issue_tracker.empty) and spares_issued.empty:
         return pd.DataFrame(columns=columns)
     delivery_by_call = _spares_actual_eta_by_call(spares_issued)
-    source = _service_order_rows_from_issue_tracker(issue_tracker)
-    if source.empty:
-        source = _service_order_rows_from_spares_issued(spares_issued)
+    source = _combine_service_order_sources(
+        _service_order_rows_from_issue_tracker(issue_tracker),
+        _service_order_rows_from_spares_issued(spares_issued),
+    )
     if source.empty:
         return pd.DataFrame(columns=columns)
 
@@ -1518,6 +1519,31 @@ def build_template_service_orders(
         if column in out.columns:
             out[column] = source_rows[column]
     return out.drop_duplicates(subset=["orderNumber"], keep="first").reset_index(drop=True) if "orderNumber" in out.columns else out
+
+
+def _combine_service_order_sources(issue_rows: pd.DataFrame, spares_rows: pd.DataFrame) -> pd.DataFrame:
+    frames = []
+    if not issue_rows.empty:
+        issue = issue_rows.copy()
+        issue["ServiceOrderSourceRank"] = 0
+        frames.append(issue)
+    if not spares_rows.empty:
+        spares = spares_rows.copy()
+        spares["ServiceOrderSourceRank"] = 1
+        frames.append(spares)
+    if not frames:
+        return pd.DataFrame()
+    combined = pd.concat(frames, ignore_index=True, sort=False)
+    if "CallMatchKey" not in combined.columns:
+        return pd.DataFrame()
+    combined["CallMatchKey"] = combined["CallMatchKey"].map(_clean_text)
+    combined = combined[combined["CallMatchKey"].ne("")].copy()
+    if combined.empty:
+        return combined
+    if "ServiceOrderSourceRank" not in combined.columns:
+        combined["ServiceOrderSourceRank"] = 1
+    combined["ServiceOrderSourceRank"] = pd.to_numeric(combined["ServiceOrderSourceRank"], errors="coerce").fillna(1)
+    return combined.sort_values("ServiceOrderSourceRank", kind="stable").reset_index(drop=True)
 
 
 def _service_order_rows_from_spares_issued(spares_issued: pd.DataFrame) -> pd.DataFrame:
@@ -1581,6 +1607,8 @@ def _service_call_number(value: object) -> str:
     tokens = re.findall(r"\d{6,}", text)
     if len(tokens) == 1:
         return tokens[0].lstrip("0") or "0"
+    if not tokens:
+        return ""
     return text
 
 

@@ -780,13 +780,13 @@ class OnboardingCsvTests(unittest.TestCase):
     def test_template_service_orders_uses_helpdesk_tickets_and_spares_actual_eta(self) -> None:
         spares = pd.DataFrame(
             {
-                "Cust Ord No": ["S_71919593", "S_71919593", "S_71942838"],
-                "Order Date": ["20/01/2026", "20/01/2026", "28/01/2026"],
-                "Order Time": ["1631", "1700", "1403"],
-                "Del Date": ["20/01/2026", "21/01/2026", "28/01/2026"],
-                "Del Time": ["1631", "0900", "1404"],
-                "Customer ": ["WCED", "WCED", "SENWES"],
-                "Customer Name": ["DW PC CORPORATION", "DW PC CORPORATION", "COCRE8 TECHNOLOGY SOLUTIONS"],
+                "Cust Ord No": ["S_71919593", "S_71919593", "S_71942838", "S_88888888"],
+                "Order Date": ["20/01/2026", "20/01/2026", "28/01/2026", "02/02/2026"],
+                "Order Time": ["1631", "1700", "1403", "0815"],
+                "Del Date": ["20/01/2026", "21/01/2026", "28/01/2026", "03/02/2026"],
+                "Del Time": ["1631", "0900", "1404", "0915"],
+                "Customer ": ["WCED", "WCED", "SENWES", "SPARES ONLY CUSTOMER"],
+                "Customer Name": ["DW PC CORPORATION", "DW PC CORPORATION", "COCRE8 TECHNOLOGY SOLUTIONS", "SPARES ONLY CUSTOMER"],
             }
         )
         issue_tracker = pd.DataFrame(
@@ -822,7 +822,7 @@ class OnboardingCsvTests(unittest.TestCase):
             issue_tracker,
         )
 
-        self.assertEqual(len(out), 4)
+        self.assertEqual(len(out), 5)
         self.assertEqual(out.loc[0, "orderNumber"], "71919593")
         self.assertEqual(out.loc[0, "RequestID"], "71919593")
         self.assertEqual(out.loc[0, "location"], "Cape Town")
@@ -838,6 +838,9 @@ class OnboardingCsvTests(unittest.TestCase):
         self.assertEqual(out.loc[2, "actualEta"], "")
         self.assertEqual(out.loc[3, "orderNumber"], "72759481")
         self.assertEqual(out.loc[3, "location"], "JHB")
+        self.assertEqual(out.loc[4, "orderNumber"], "88888888")
+        self.assertEqual(out.loc[4, "location"], "SPARES ONLY CUSTOMER")
+        self.assertEqual(out.loc[4, "actualEta"], "2026-02-03 09:15:00")
 
     def test_template_purchase_orders_maps_sap_po_lines_and_receipts(self) -> None:
         source = pd.DataFrame(
