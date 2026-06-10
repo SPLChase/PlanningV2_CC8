@@ -414,10 +414,10 @@ def generate_onboarding_csvs(cfg: PlanningConfig, out_dir: Path) -> list[Path]:
 
     parts, warehouses, inventory = fetch_live_template_sources(cfg)
     purchase_orders = fetch_live_purchase_orders(cfg)
-    usage = fetch_live_delivery_note_usage(cfg)
+    usage_context = fetch_live_delivery_note_usage(cfg)
     stock_audit = _read_stock_audit(_stock_audit_3y_path(cfg))
-    if usage.empty:
-        usage = stock_audit
+    parts_usage_source = stock_audit if not stock_audit.empty else usage_context
+    usage = usage_context if not usage_context.empty else stock_audit
     stock_flow = stock_audit
     customers = pd.DataFrame()
     masters = _read_masters(cfg.reference_dir / "masters.csv")
@@ -436,6 +436,11 @@ def generate_onboarding_csvs(cfg: PlanningConfig, out_dir: Path) -> list[Path]:
         purchase_orders,
         stock_flow,
         manual_warehouses,
+    )
+    parts_usage_source = (
+        _filter_frame_excluded_warehouses(parts_usage_source, "Whse")
+        if "Whse" in parts_usage_source.columns
+        else _filter_frame_excluded_warehouses(parts_usage_source, "WarehouseCode")
     )
 
     written: list[Path] = []
@@ -457,6 +462,8 @@ def generate_onboarding_csvs(cfg: PlanningConfig, out_dir: Path) -> list[Path]:
         spi_cost_history,
         altsgen_part_type_evidence,
         warehouse_locations,
+        parts_usage_source,
+        usage_context,
     )
 
     for object_name, df in outputs.items():
@@ -476,6 +483,9 @@ def generate_onboarding_csvs(cfg: PlanningConfig, out_dir: Path) -> list[Path]:
             warehouses,
             parts,
             combined_spi_costs,
+            parts_usage_source,
+            usage_context,
+            warehouse_locations,
         )
     )
     return written
@@ -537,6 +547,8 @@ def build_template_outputs(
     spi_cost_history: pd.DataFrame | None = None,
     altsgen_part_type_evidence: pd.DataFrame | None = None,
     warehouse_locations: pd.DataFrame | None = None,
+    parts_usage_source: pd.DataFrame | None = None,
+    delivery_note_context: pd.DataFrame | None = None,
 ) -> dict[str, pd.DataFrame]:
     outputs: dict[str, pd.DataFrame] = {}
     for object_name, columns in templates.items():
@@ -557,11 +569,12 @@ def build_template_outputs(
             )
         elif object_name == "PartsUsage":
             outputs[object_name] = build_template_parts_usage(
-                usage,
+                parts_usage_source if parts_usage_source is not None and not parts_usage_source.empty else usage,
                 columns,
                 masters,
                 issue_tracker,
                 _combine_warehouse_name_sources(warehouses, warehouse_locations),
+                delivery_note_context,
             )
         elif object_name == "ServiceOrder":
             outputs[object_name] = build_template_service_orders(
@@ -1012,6 +1025,20 @@ def _filtered_sap_delivery_note_rows(usage: pd.DataFrame) -> pd.DataFrame:
     ].copy().reset_index(drop=True)
 
 
+def _delivery_note_context_by_number(delivery_note_context: pd.DataFrame | None) -> dict[str, dict[str, object]]:
+    if delivery_note_context is None or delivery_note_context.empty or "DeliveryNoteNumber" not in delivery_note_context.columns:
+        return {}
+    work = _filtered_sap_delivery_note_rows(delivery_note_context)
+    if work.empty:
+        return {}
+    work["DeliveryNoteNumberKey"] = work["DeliveryNoteNumber"].map(_clean_text)
+    work = work[work["DeliveryNoteNumberKey"].ne("")]
+    if work.empty:
+        return {}
+    work = work.drop_duplicates(subset=["DeliveryNoteNumberKey"], keep="first")
+    return work.set_index("DeliveryNoteNumberKey").to_dict("index")
+
+
 def _spi_main_alt_lookup(spi: pd.DataFrame) -> dict[str, str]:
     if spi.empty or "Main alternative par" not in spi.columns:
         return {}
@@ -1311,12 +1338,20 @@ def build_template_parts_usage(
     masters: pd.DataFrame | None = None,
     issue_tracker: pd.DataFrame | None = None,
     warehouse_locations: pd.DataFrame | None = None,
+    delivery_note_context: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     if usage.empty:
         return pd.DataFrame(columns=columns)
     if {"DeliveryNoteNumber", "ItemNo", "WarehouseCode"}.issubset(usage.columns):
         return _build_template_parts_usage_from_sap_delivery_notes(usage, columns, masters, issue_tracker, warehouse_locations)
-    return _build_template_parts_usage_from_stock_audit(usage, columns, masters)
+    return _build_template_parts_usage_from_stock_audit(
+        usage,
+        columns,
+        masters,
+        issue_tracker,
+        warehouse_locations,
+        delivery_note_context,
+    )
 
 
 def _build_template_parts_usage_from_sap_delivery_notes(
@@ -1382,6 +1417,9 @@ def _build_template_parts_usage_from_stock_audit(
     usage: pd.DataFrame,
     columns: list[str],
     masters: pd.DataFrame | None = None,
+    issue_tracker: pd.DataFrame | None = None,
+    warehouse_locations: pd.DataFrame | None = None,
+    delivery_note_context: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     work = usage.copy()
     for column in ["Item No.", "Description"]:
@@ -1400,17 +1438,48 @@ def _build_template_parts_usage_from_stock_audit(
     ].copy().reset_index(drop=True)
     if dn.empty:
         return pd.DataFrame(columns=columns)
+    dn_number = dn["Document"].astype(str).str.replace(r"^\s*DN\s+", "", regex=True).str.strip()
+    context = _delivery_note_context_by_number(delivery_note_context)
+    context_rows = dn_number.map(lambda value: context.get(_clean_text(value), {}))
+    call_number = context_rows.map(lambda row: _call_number_from_delivery_note(pd.Series(row)) if row else "")
+    order_number = call_number.where(call_number.astype(str).str.strip().ne(""), dn["Document"].astype(str).str.strip())
+    comments = context_rows.map(lambda row: row.get("Comments", "") if row else "")
+    serial = comments.map(lambda value: _parse_labeled_value(value, r"Serial\s*(?:number|nr|no)?"))
+    customer = context_rows.map(lambda row: _customer_name_from_delivery_note_row(pd.Series(row)) if row else "")
+    helpdesk = _helpdesk_by_call(issue_tracker)
+    helpdesk_rows = order_number.map(lambda value: helpdesk.get(_call_match_key(value), {}))
+    warehouse_code = dn["Whse"].astype(str).str.strip()
+    warehouse_name = warehouse_code.str.upper().map(_warehouse_name_lookup(warehouse_locations)).fillna("")
+    warehouse_name = warehouse_name.where(warehouse_name.astype(str).str.strip().ne(""), warehouse_code)
+
     out = _blank_template(columns, len(dn))
     if "orderNumber" in out.columns:
-        out["orderNumber"] = dn["Document"].astype(str).str.strip()
+        out["orderNumber"] = order_number
+    if "requestId" in out.columns:
+        out["requestId"] = call_number
     if "OrderType" in out.columns:
         out["OrderType"] = "service_order"
+    if "orderType" in out.columns:
+        out["orderType"] = "service_order"
+    if "customerCompanyCode" in out.columns:
+        out["customerCompanyCode"] = customer
+    if "orderStartDatetime" in out.columns:
+        out["orderStartDatetime"] = helpdesk_rows.map(lambda row: _parse_any_date(row.get("Created", "")))
+    if "orderStatus" in out.columns:
+        out["orderStatus"] = helpdesk_rows.map(lambda row: str(row.get("Status", "") or "").strip())
     if "partCode" in out.columns:
         out["partCode"] = dn["Item No."].map(_part_key)
+    if "serialNumber" in out.columns:
+        out["serialNumber"] = serial
     if "Master" in out.columns:
         out["Master"] = dn["Item No."].map(_part_key).map(_master_lookup(masters)).fillna("")
     if "Warehouse" in out.columns:
-        out["Warehouse"] = dn["Whse"].astype(str).str.strip()
+        out["Warehouse"] = warehouse_name
+    if "Warehouse Code" not in out.columns:
+        insert_at = out.columns.get_loc("Warehouse") + 1 if "Warehouse" in out.columns else len(out.columns)
+        out.insert(insert_at, "Warehouse Code", warehouse_code)
+    else:
+        out["Warehouse Code"] = warehouse_code
     if "quantityUsed" in out.columns:
         out["quantityUsed"] = dn["QuantityNum"].abs()
     if "partsUsedDateTime" in out.columns:
@@ -1419,6 +1488,8 @@ def _build_template_parts_usage_from_stock_audit(
         if fallback.any():
             parsed.loc[fallback] = pd.to_datetime(dn.loc[fallback, "Posting Date"].astype(str).str.strip(), format="%d/%m/%Y", errors="coerce")
         out["partsUsedDateTime"] = parsed.dt.strftime("%Y-%m-%d").fillna("")
+    if "deviceSerialNumber" in out.columns:
+        out["deviceSerialNumber"] = serial
     return out.drop_duplicates(keep="first")
 
 
@@ -1895,7 +1966,13 @@ def build_template_part_types(altsgen_evidence: pd.DataFrame, columns: list[str]
     return out[columns].reset_index(drop=True)
 
 
-def build_parts_usage_evidence(usage: pd.DataFrame, masters: pd.DataFrame | None) -> pd.DataFrame:
+def build_parts_usage_evidence(
+    usage: pd.DataFrame,
+    masters: pd.DataFrame | None,
+    issue_tracker: pd.DataFrame | None = None,
+    warehouse_locations: pd.DataFrame | None = None,
+    delivery_note_context: pd.DataFrame | None = None,
+) -> pd.DataFrame:
     columns = [
         "Source",
         "deliveryNoteNumber",
@@ -1926,6 +2003,9 @@ def build_parts_usage_evidence(usage: pd.DataFrame, masters: pd.DataFrame | None
             "partsUsedDateTime",
         ],
         masters,
+        issue_tracker,
+        warehouse_locations,
+        delivery_note_context,
     )
     if template.empty:
         return pd.DataFrame(columns=columns)
@@ -1934,7 +2014,21 @@ def build_parts_usage_evidence(usage: pd.DataFrame, masters: pd.DataFrame | None
         source_rows = _filtered_sap_delivery_note_rows(usage)
         delivery_notes = _col(source_rows, "DeliveryNoteNumber").astype(str).str.strip()
     else:
-        delivery_notes = pd.Series([""] * len(template))
+        work = usage.copy()
+        for column in ["Item No.", "Description"]:
+            if column in work.columns:
+                work[column] = work[column].replace(r"^\s*$", pd.NA, regex=True).ffill().fillna("")
+        for column in ["Document", "Posting Date", "Quantity"]:
+            if column not in work.columns:
+                work[column] = ""
+        work["QuantityNum"] = _to_number(work["Quantity"])
+        source_rows = work[
+            work["Document"].astype(str).str.startswith("DN ", na=False)
+            & work["Posting Date"].astype(str).str.strip().ne("")
+            & work["Item No."].astype(str).str.strip().ne("")
+            & work["QuantityNum"].lt(0)
+        ].copy().drop_duplicates(keep="first").reset_index(drop=True)
+        delivery_notes = source_rows["Document"].astype(str).str.replace(r"^\s*DN\s+", "", regex=True).str.strip()
     delivery_notes = delivery_notes.reset_index(drop=True).reindex(range(len(template)), fill_value="")
     out = pd.DataFrame(
         {
@@ -1953,7 +2047,7 @@ def build_parts_usage_evidence(usage: pd.DataFrame, masters: pd.DataFrame | None
     )
     out["EvidenceStatus"] = "Mapped to SPL Master"
     out.loc[out["SPLMaster"].astype(str).str.strip().eq(""), "EvidenceStatus"] = "Needs SPL Master mapping"
-    return out
+    return out.drop_duplicates(keep="first").reset_index(drop=True)
 
 
 def build_purchase_order_evidence(
@@ -2130,10 +2224,23 @@ def write_review_evidence(
     warehouses: pd.DataFrame | None = None,
     parts: pd.DataFrame | None = None,
     spi_costs: pd.DataFrame | None = None,
+    parts_usage_source: pd.DataFrame | None = None,
+    delivery_note_context: pd.DataFrame | None = None,
+    warehouse_locations: pd.DataFrame | None = None,
 ) -> list[Path]:
     evidence_dir.mkdir(parents=True, exist_ok=True)
+    usage_for_evidence = parts_usage_source if parts_usage_source is not None and not parts_usage_source.empty else usage
     files = [
-        (build_parts_usage_evidence(usage, masters), evidence_dir / "PartsUsage_SPLMaster_Evidence.csv"),
+        (
+            build_parts_usage_evidence(
+                usage_for_evidence,
+                masters,
+                issue_tracker,
+                warehouse_locations,
+                delivery_note_context,
+            ),
+            evidence_dir / "PartsUsage_SPLMaster_Evidence.csv",
+        ),
         (build_purchase_order_evidence(purchase_orders, masters, issue_tracker), evidence_dir / "PurchaseOrders_SPLMaster_Evidence.csv"),
         (purchase_order_reconciliation(purchase_orders, issue_tracker, masters), evidence_dir / "PurchaseOrders_Ticket_Reconciliation.csv"),
         (issue_tracker_evidence_rows(issue_tracker, masters), evidence_dir / "IssueTracker_Line_Evidence.csv"),

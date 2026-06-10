@@ -12,6 +12,7 @@ from planning_v2.onboarding_csvs import (
     build_template_parts,
     build_template_parts_usage,
     build_template_parts_usage_from_issue_tracker,
+    build_template_outputs,
     build_template_purchase_orders,
     build_template_service_orders,
     _cost_category,
@@ -690,6 +691,51 @@ class OnboardingCsvTests(unittest.TestCase):
         self.assertEqual(out.loc[0, "orderNumber"], "DN 1")
         self.assertEqual(out.loc[0, "partCode"], "ACTUALALT")
         self.assertEqual(out.loc[0, "Master"], "SPL1")
+
+    def test_template_outputs_uses_stock_audit_parts_usage_base_over_dn_context(self) -> None:
+        dn_context = pd.DataFrame(
+            {
+                "DeliveryNoteNumber": ["50006687"],
+                "DocDate": ["20260206"],
+                "CustomerRefNumber": ["72749474"],
+                "Comments": ["Call Nr 72749474"],
+                "ItemNo": ["38066705"],
+                "WarehouseCode": ["FUJ CT"],
+                "Quantity": [8],
+            }
+        )
+        stock_audit = pd.DataFrame(
+            {
+                "Item No.": ["38066705", ""],
+                "Description": ["Part", ""],
+                "Posting Date": ["06/02/26", "13/02/26"],
+                "Document": ["DN 50006687", "DN 50006712"],
+                "Whse": ["FUJ CT", "FUJ CT"],
+                "Quantity": ["-8", "-1"],
+            }
+        )
+
+        outputs = build_template_outputs(
+            {"PartsUsage": ["orderNumber", "requestId", "partCode", "quantityUsed", "partsUsedDateTime"]},
+            pd.DataFrame(),
+            dn_context,
+            pd.DataFrame(),
+            pd.DataFrame(),
+            pd.DataFrame(),
+            pd.DataFrame(),
+            pd.DataFrame(),
+            masters=pd.DataFrame(),
+            parts_usage_source=stock_audit,
+            delivery_note_context=dn_context,
+        )
+
+        out = outputs["PartsUsage"]
+        self.assertEqual(len(out), 2)
+        self.assertEqual(list(out["partCode"]), ["38066705", "38066705"])
+        self.assertEqual(list(out["quantityUsed"]), [8, 1])
+        self.assertEqual(list(out["partsUsedDateTime"]), ["2026-02-06", "2026-02-13"])
+        self.assertEqual(out.loc[0, "orderNumber"], "72749474")
+        self.assertEqual(out.loc[1, "orderNumber"], "DN 50006712")
 
     def test_template_parts_usage_enriches_sap_delivery_note_context(self) -> None:
         usage = pd.DataFrame(
