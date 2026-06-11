@@ -410,6 +410,8 @@ class OnboardingCsvTests(unittest.TestCase):
         parts = pd.DataFrame({"ItemNo": ["A1"], "SPLMaster": ["SPL1"], "ItemDescription": ["Part A"], "DisplayItemNo": ["A1"]})
         out = build_template_parts(parts, ["SPLMaster", "PartNumber", "isPrimary", "primaryPartNumber", "description"])
         self.assertEqual(out.loc[0, "SPLMaster"], "")
+        self.assertEqual(out.loc[0, "Primary Part"], "A1")
+        self.assertEqual(out.loc[0, "B_Part"], "A1")
         self.assertEqual(out.loc[0, "isPrimary"], "True")
         self.assertEqual(out.loc[0, "primaryPartNumber"], "A1")
 
@@ -437,7 +439,23 @@ class OnboardingCsvTests(unittest.TestCase):
         out = build_template_parts(parts, ["SPLMaster", "PartNumber", "isPrimary", "primaryPartNumber", "description"], spi)
         self.assertEqual(out.loc[0, "isPrimary"], "True")
         self.assertEqual(out.loc[1, "isPrimary"], "False")
+        self.assertEqual(out.loc[1, "Primary Part"], "34076947")
+        self.assertEqual(out.loc[1, "B_Part"], "38049457")
         self.assertEqual(out.loc[1, "primaryPartNumber"], "34076947")
+
+    def test_template_parts_removes_exact_duplicate_rows(self) -> None:
+        parts = pd.DataFrame(
+            {
+                "ItemNo": ["A1", "A1"],
+                "ItemDescription": ["Part A", "Part A"],
+                "DisplayDescription": ["", ""],
+            }
+        )
+
+        out = build_template_parts(parts, ["PartNumber", "description"])
+
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out.loc[0, "B_Part"], "A1")
 
     def test_cost_category_uses_approved_co_cre8_cost_bands(self) -> None:
         self.assertEqual(_cost_category("0.01"), "A")

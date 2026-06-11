@@ -27,6 +27,8 @@ from planning_v2.template_specs import template_columns
 
 POPULATED_TEMPLATE_FIELDS = {
     "Parts": {
+        "Primary Part": "SPI_DATA.csv:Main alternative par normalized to the part number format expected by Planning V2",
+        "B_Part": "SAP Service Layer SQLQueries:OITM.ItemCode normalized as the actual CoCre8/SAP part number",
         "SPLMaster": "Reference masters.csv:SPL Master by linked item",
         "PartNumber": "SAP Service Layer SQLQueries:OITM.ItemCode",
         "isPrimary": "SPI_DATA.csv:Main alternative par equals material/part number; defaults true when no main alternative is listed",
@@ -1281,13 +1283,23 @@ def build_template_parts(
     out = _blank_template(columns, len(parts))
     item_keys = _col(parts, "ItemNo").map(_part_key)
     main_alt = item_keys.map(main_alt_by_part).fillna("")
+    primary = main_alt.map(lambda value: _part_key(value) if str(value).strip().isdigit() else str(value).strip())
+    primary = primary.where(primary.astype(str).str.strip().ne(""), item_keys)
+    if "Primary Part" not in out.columns:
+        out.insert(0, "Primary Part", primary)
+    else:
+        out["Primary Part"] = primary
+    if "B_Part" not in out.columns:
+        insert_at = 1 if "Primary Part" in out.columns else 0
+        out.insert(insert_at, "B_Part", item_keys)
+    else:
+        out["B_Part"] = item_keys
     if "SPLMaster" in out.columns:
         out["SPLMaster"] = item_keys.map(master_by_part).fillna("")
     if "PartNumber" in out.columns:
-        out["PartNumber"] = _col(parts, "ItemNo")
+        out["PartNumber"] = item_keys
     if "primaryPartNumber" in out.columns:
-        primary = main_alt.map(lambda value: _part_key(value) if str(value).strip().isdigit() else str(value).strip())
-        out["primaryPartNumber"] = primary.where(primary.astype(str).str.strip().ne(""), item_keys)
+        out["primaryPartNumber"] = primary
     if "isPrimary" in out.columns:
         main_alt_keys = main_alt.map(_part_key)
         out["isPrimary"] = "True"
@@ -1329,6 +1341,7 @@ def build_template_parts(
         out["isKit"] = _kit_flags(out["description"] if "description" in out.columns else _col(parts, "ItemDescription"), kit_product_type, kit_part_type)
     if "isTool" in out.columns:
         out["isTool"] = _tool_flags(_col(parts, "ItemNo"))
+    out = out.drop_duplicates(keep="first")
     return out.drop_duplicates(subset=[col for col in ["SPLMaster", "PartNumber"] if col in out.columns], keep="first")
 
 
