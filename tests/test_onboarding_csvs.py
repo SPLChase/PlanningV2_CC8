@@ -228,6 +228,7 @@ class OnboardingCsvTests(unittest.TestCase):
     def test_template_stock_on_hand_populates_canonical_part_code(self) -> None:
         inventory = pd.DataFrame({"ItemNo": ["A1"], "WarehouseCode": ["WH1"], "OnHand": ["2"]})
         stock = build_template_stock_on_hand(inventory, ["partCode", "warehouseCode", "quantityOnHand"])
+        self.assertEqual(stock.loc[0, "Ws Part"], "A1")
         self.assertEqual(stock.loc[0, "partCode"], "A1")
         self.assertEqual(stock.loc[0, "warehouseCode"], "WH1")
         self.assertEqual(stock.loc[0, "quantityOnHand"], 2)
@@ -760,7 +761,8 @@ class OnboardingCsvTests(unittest.TestCase):
         self.assertEqual(list(out["partCode"]), ["38066705", "38066705"])
         self.assertEqual(list(out["quantityUsed"]), [8, 1])
         self.assertEqual(list(out["partsUsedDateTime"]), ["2026-02-06", "2026-02-13"])
-        self.assertEqual(out.loc[0, "orderNumber"], "72749474")
+        self.assertEqual(out.loc[0, "orderNumber"], "DN 50006687")
+        self.assertEqual(out.loc[0, "requestId"], "72749474")
         self.assertEqual(out.loc[1, "orderNumber"], "DN 50006712")
 
     def test_template_parts_usage_enriches_sap_delivery_note_context(self) -> None:
@@ -802,7 +804,7 @@ class OnboardingCsvTests(unittest.TestCase):
             pd.DataFrame({"WarehouseCode": ["FUJITSU"], "WarehouseName": ["CC8 - MAIN - JHB - SPL"]}),
         )
 
-        self.assertEqual(out.loc[0, "orderNumber"], "67548724")
+        self.assertEqual(out.loc[0, "orderNumber"], "DN 50006351")
         self.assertEqual(out.loc[0, "requestId"], "67548724")
         self.assertEqual(out.loc[0, "OrderType"], "service_order")
         self.assertEqual(out.loc[0, "customerCompanyCode"], "Massmart")

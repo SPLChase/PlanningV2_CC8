@@ -61,6 +61,7 @@ POPULATED_TEMPLATE_FIELDS = {
         "warehouseStatusId": "Manual fill workbook:isObsolete inverted to is_active flag (Y active, N obsolete)",
     },
     "WarehouseStockOnHand": {
+        "Ws Part": "Planning V2 UI alias for warehouse stock part id; same SAP part number as partCode",
         "partCode": "SAP Service Layer SQLQueries:OITW.ItemCode",
         "warehouseCode": "SAP Service Layer SQLQueries:OITW.WhsCode",
         "quantityAllocated": "SAP Service Layer SQLQueries:OITW.IsCommited",
@@ -96,8 +97,8 @@ POPULATED_TEMPLATE_FIELDS = {
         "timeZone": "South Africa Standard Time",
     },
     "PartsUsage": {
-        "orderNumber": "SAP Service Layer SQLQueries:ODLN.NumAtCard or parsed Call Nr from ODLN.Comments",
-        "requestId": "SAP Service Layer SQLQueries:ODLN.NumAtCard or parsed Call Nr from ODLN.Comments",
+        "orderNumber": "SAP Service Layer SQLQueries:ODLN.DocNum/DeliveryNoteNumber as the SAP delivery note id",
+        "requestId": "SAP Service Layer SQLQueries:ODLN.NumAtCard or parsed Call Nr from ODLN.Comments as the helpdesk call/ticket id where present",
         "OrderType": "Business rule: service_order for all CoCre8 usage",
         "customerCompanyCode": "SAP Service Layer SQLQueries:parsed Customer from ODLN.Comments where present",
         "orderStartDatetime": "HelpDesk issue tracker Created date by unambiguous call-number match",
@@ -1411,13 +1412,12 @@ def _build_template_parts_usage_from_sap_delivery_notes(
 
     call_number = dn.apply(_call_number_from_delivery_note, axis=1)
     delivery_note = dn["DeliveryNoteNumber"].astype(str).str.strip()
-    fallback_order = "DN " + delivery_note
-    order_number = call_number.where(call_number.astype(str).str.strip().ne(""), fallback_order)
+    order_number = "DN " + delivery_note
     comments = dn["Comments"]
     serial = comments.map(lambda value: _parse_labeled_value(value, r"Serial\s*(?:number|nr|no)?"))
     customer = dn.apply(_customer_name_from_delivery_note_row, axis=1)
     helpdesk = _helpdesk_by_call(issue_tracker)
-    helpdesk_rows = order_number.map(lambda value: helpdesk.get(_call_match_key(value), {}))
+    helpdesk_rows = call_number.map(lambda value: helpdesk.get(_call_match_key(value), {}))
     warehouse_code = dn["WarehouseCode"].astype(str).str.strip()
     warehouse_name = warehouse_code.str.upper().map(_warehouse_name_lookup(warehouse_locations)).fillna("")
     warehouse_name = warehouse_name.where(warehouse_name.astype(str).str.strip().ne(""), warehouse_code)
@@ -1488,12 +1488,12 @@ def _build_template_parts_usage_from_stock_audit(
     context = _delivery_note_context_by_number(delivery_note_context)
     context_rows = dn_number.map(lambda value: context.get(_clean_text(value), {}))
     call_number = context_rows.map(lambda row: _call_number_from_delivery_note(pd.Series(row)) if row else "")
-    order_number = call_number.where(call_number.astype(str).str.strip().ne(""), dn["Document"].astype(str).str.strip())
+    order_number = dn["Document"].astype(str).str.strip()
     comments = context_rows.map(lambda row: row.get("Comments", "") if row else "")
     serial = comments.map(lambda value: _parse_labeled_value(value, r"Serial\s*(?:number|nr|no)?"))
     customer = context_rows.map(lambda row: _customer_name_from_delivery_note_row(pd.Series(row)) if row else "")
     helpdesk = _helpdesk_by_call(issue_tracker)
-    helpdesk_rows = order_number.map(lambda value: helpdesk.get(_call_match_key(value), {}))
+    helpdesk_rows = call_number.map(lambda value: helpdesk.get(_call_match_key(value), {}))
     warehouse_code = dn["Whse"].astype(str).str.strip()
     warehouse_name = warehouse_code.str.upper().map(_warehouse_name_lookup(warehouse_locations)).fillna("")
     warehouse_name = warehouse_name.where(warehouse_name.astype(str).str.strip().ne(""), warehouse_code)
@@ -2494,10 +2494,17 @@ def build_template_stock_on_hand(
     if inventory.empty:
         return pd.DataFrame(columns=columns)
     out = _blank_template(columns, len(inventory))
+    part_number = _col(inventory, "ItemNo")
+    if "Ws Part" in out.columns:
+        out["Ws Part"] = part_number
+    elif "partCode" in out.columns:
+        out.insert(out.columns.get_loc("partCode"), "Ws Part", part_number)
+    else:
+        out["Ws Part"] = part_number
     if "partCode" in out.columns:
-        out["partCode"] = _col(inventory, "ItemNo")
+        out["partCode"] = part_number
     if "partNumber" in out.columns:
-        out["partNumber"] = _col(inventory, "ItemNo")
+        out["partNumber"] = part_number
     if "warehouseCode" in out.columns:
         out["warehouseCode"] = _col(inventory, "WarehouseCode")
     if "quantityAllocated" in out.columns:
@@ -2508,7 +2515,7 @@ def build_template_stock_on_hand(
         out["quantityInbound"] = _to_number(_first_col(inventory, ["OnOrder", "Ordered"]))
     if "uniqueId" in out.columns:
         by_part = _master_lookup(masters)
-        part_keys = _col(inventory, "ItemNo").map(_part_key)
+        part_keys = part_number.map(_part_key)
         master_keys = part_keys.map(by_part).fillna("")
         warehouse_keys = _col(inventory, "WarehouseCode").astype(str).str.strip()
         row_keys = part_keys.astype(str) + "|" + master_keys.astype(str) + "|" + warehouse_keys.astype(str)
