@@ -102,10 +102,14 @@ POPULATED_TEMPLATE_FIELDS = {
         "customerCompanyCode": "SAP Service Layer SQLQueries:parsed Customer from ODLN.Comments where present",
         "orderStartDatetime": "HelpDesk issue tracker Created date by unambiguous call-number match",
         "orderStatus": "HelpDesk issue tracker Status by unambiguous call-number match",
+        "Pu Part": "Planning V2 UI alias for parts usage part id; same actual delivered SAP part as partCode",
+        "Part Code": "Planning V2 UI alias for part id/bpart join; same actual delivered SAP part as partCode",
         "partCode": "SAP Service Layer SQLQueries:DLN1.ItemCode actual delivered part",
         "serialNumber": "SAP Service Layer SQLQueries:parsed Serial number from ODLN.Comments where present",
         "quantityUsed": "SAP Service Layer SQLQueries:DLN1.Quantity",
         "partsUsedDateTime": "SAP Service Layer SQLQueries:ODLN.DocDate",
+        "Pu Warehouse Code": "Planning V2 UI alias for parts usage warehouse id; SAP Service Layer SQLQueries:DLN1.WhsCode",
+        "Pu Warehouse": "Planning V2 UI alias for warehouse id; SAP Service Layer SQLQueries:DLN1.WhsCode",
         "Warehouse": "MinStock3/Exco warehouse lookup:WarehouseName by SAP DLN1.WhsCode",
         "Warehouse Code": "SAP Service Layer SQLQueries:DLN1.WhsCode",
         "deviceSerialNumber": "SAP Service Layer SQLQueries:parsed Serial number from ODLN.Comments where present",
@@ -1367,6 +1371,33 @@ def build_template_parts_usage(
     )
 
 
+def _set_or_insert_column(
+    frame: pd.DataFrame,
+    column: str,
+    values: pd.Series,
+    *,
+    before: str | None = None,
+    after: str | None = None,
+) -> None:
+    if column in frame.columns:
+        frame[column] = values
+        return
+    if before and before in frame.columns:
+        frame.insert(frame.columns.get_loc(before), column, values)
+        return
+    if after and after in frame.columns:
+        frame.insert(frame.columns.get_loc(after) + 1, column, values)
+        return
+    frame[column] = values
+
+
+def _add_parts_usage_ui_aliases(out: pd.DataFrame, part_code: pd.Series, warehouse_code: pd.Series) -> None:
+    _set_or_insert_column(out, "Pu Part", part_code, before="partCode")
+    _set_or_insert_column(out, "Part Code", part_code, after="Pu Part")
+    _set_or_insert_column(out, "Pu Warehouse Code", warehouse_code, before="Warehouse")
+    _set_or_insert_column(out, "Pu Warehouse", warehouse_code, after="Pu Warehouse Code")
+
+
 def _build_template_parts_usage_from_sap_delivery_notes(
     usage: pd.DataFrame,
     columns: list[str],
@@ -1390,6 +1421,7 @@ def _build_template_parts_usage_from_sap_delivery_notes(
     warehouse_code = dn["WarehouseCode"].astype(str).str.strip()
     warehouse_name = warehouse_code.str.upper().map(_warehouse_name_lookup(warehouse_locations)).fillna("")
     warehouse_name = warehouse_name.where(warehouse_name.astype(str).str.strip().ne(""), warehouse_code)
+    part_code = dn["ItemNo"].map(_part_key)
 
     out = _blank_template(columns, len(dn))
     if "orderNumber" in out.columns:
@@ -1404,8 +1436,9 @@ def _build_template_parts_usage_from_sap_delivery_notes(
         out["orderStartDatetime"] = helpdesk_rows.map(lambda row: _parse_any_date(row.get("Created", "")))
     if "orderStatus" in out.columns:
         out["orderStatus"] = helpdesk_rows.map(lambda row: str(row.get("Status", "") or "").strip())
+    _add_parts_usage_ui_aliases(out, part_code, warehouse_code)
     if "partCode" in out.columns:
-        out["partCode"] = dn["ItemNo"].map(_part_key)
+        out["partCode"] = part_code
     if "serialNumber" in out.columns:
         out["serialNumber"] = serial
     if "quantityUsed" in out.columns:
@@ -1464,6 +1497,7 @@ def _build_template_parts_usage_from_stock_audit(
     warehouse_code = dn["Whse"].astype(str).str.strip()
     warehouse_name = warehouse_code.str.upper().map(_warehouse_name_lookup(warehouse_locations)).fillna("")
     warehouse_name = warehouse_name.where(warehouse_name.astype(str).str.strip().ne(""), warehouse_code)
+    part_code = dn["Item No."].map(_part_key)
 
     out = _blank_template(columns, len(dn))
     if "orderNumber" in out.columns:
@@ -1480,12 +1514,13 @@ def _build_template_parts_usage_from_stock_audit(
         out["orderStartDatetime"] = helpdesk_rows.map(lambda row: _parse_any_date(row.get("Created", "")))
     if "orderStatus" in out.columns:
         out["orderStatus"] = helpdesk_rows.map(lambda row: str(row.get("Status", "") or "").strip())
+    _add_parts_usage_ui_aliases(out, part_code, warehouse_code)
     if "partCode" in out.columns:
-        out["partCode"] = dn["Item No."].map(_part_key)
+        out["partCode"] = part_code
     if "serialNumber" in out.columns:
         out["serialNumber"] = serial
     if "Master" in out.columns:
-        out["Master"] = dn["Item No."].map(_part_key).map(_master_lookup(masters)).fillna("")
+        out["Master"] = part_code.map(_master_lookup(masters)).fillna("")
     if "Warehouse" in out.columns:
         out["Warehouse"] = warehouse_name
     if "Warehouse Code" not in out.columns:
@@ -1540,6 +1575,8 @@ def build_template_parts_usage_from_issue_tracker(
         out["orderStartDatetime"] = _col(source, "Created").map(_parse_any_date)
     if "orderStatus" in out.columns:
         out["orderStatus"] = _col(source, "Status")
+    warehouse_code = _col(source, "DispatchWarehouse").astype(str).str.strip()
+    _add_parts_usage_ui_aliases(out, part, warehouse_code)
     if "partCode" in out.columns:
         out["partCode"] = part
     if "serialNumber" in out.columns:
@@ -1549,7 +1586,12 @@ def build_template_parts_usage_from_issue_tracker(
     if "partsUsedDateTime" in out.columns:
         out["partsUsedDateTime"] = _col(source, "Created").map(_parse_any_date)
     if "Warehouse" in out.columns:
-        out["Warehouse"] = _col(source, "DispatchWarehouse")
+        out["Warehouse"] = warehouse_code
+    if "Warehouse Code" not in out.columns:
+        insert_at = out.columns.get_loc("Warehouse") + 1 if "Warehouse" in out.columns else len(out.columns)
+        out.insert(insert_at, "Warehouse Code", warehouse_code)
+    else:
+        out["Warehouse Code"] = warehouse_code
     if "deviceSerialNumber" in out.columns:
         out["deviceSerialNumber"] = _col(source, "Serial Nr")
     if "Master" in out.columns:
