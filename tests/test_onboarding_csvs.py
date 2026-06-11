@@ -872,6 +872,7 @@ class OnboardingCsvTests(unittest.TestCase):
             {
                 "Call Number": ["71919593", "71942838", "77782146", ""],
                 "Subject": ["", "", "", "ACER Spares || Ticket 72759481 || 00534758"],
+                "ConversationHistory": ["", "", "Call Nr 77782146", ""],
                 "Created": ["2026-01-20T16:31:00Z", "2026-01-28T14:03:00Z", "2026-05-25T19:33:38Z", "2026-05-07T08:32:29Z"],
                 "Status": ["Closed", "Closed", "Open", "Closed"],
                 "SLA": ["8 Hours Recovery 24x7", "NBD response, 9x5", "8 Hours Recovery 24x7", "NBD response, 9x5"],
@@ -917,13 +918,38 @@ class OnboardingCsvTests(unittest.TestCase):
         self.assertEqual(out.loc[2, "RequestID"], "77782146")
         self.assertEqual(out.loc[2, "location"], "SANLAM")
         self.assertEqual(out.loc[2, "actualEta"], "")
-        self.assertEqual(out.loc[3, "orderNumber"], "72759481")
-        self.assertEqual(out.loc[3, "RequestID"], "72759481")
+        self.assertEqual(out.loc[3, "orderNumber"], "72759481 || 00534758")
+        self.assertEqual(out.loc[3, "RequestID"], "72759481 || 00534758")
         self.assertEqual(out.loc[3, "location"], "JHB")
         self.assertEqual(out.loc[4, "orderNumber"], "DN 50001004")
         self.assertEqual(out.loc[4, "RequestID"], "88888888")
         self.assertEqual(out.loc[4, "location"], "SPARES ONLY CUSTOMER")
         self.assertEqual(out.loc[4, "actualEta"], "2026-02-03 09:15:00")
+
+    def test_template_service_orders_excludes_dirty_helpdesk_identifiers(self) -> None:
+        issue_tracker = pd.DataFrame(
+            {
+                "Call Number": ["38067373", "26OPP00000640 (PO-250184)", "71908593 || 00532719", ""],
+                "Subject": [
+                    "RE: Parts Recieved - 38067373 - shipment to Eswatini",
+                    "FW: Spares Availability-Triple4-TDW-26OPP00000640 (PO-250184)",
+                    "ACER - Khauleza Spares || Ticket 71908593 || 00532719",
+                    "RE: Server failure",
+                ],
+                "ConversationHistory": ["", "", "", "Call Nr 77782146"],
+                "Created": ["2026-05-01T10:00:00Z"] * 4,
+                "Status": ["Closed"] * 4,
+                "SLA": [""] * 4,
+                "DeliveryCity": ["JHB"] * 4,
+                "Customer": ["Customer"] * 4,
+                "Part Nr": ["38067373", "", "", ""],
+            }
+        )
+
+        out = build_template_service_orders(issue_tracker=issue_tracker, spares_issued=pd.DataFrame(), columns=["orderNumber", "RequestID"])
+
+        self.assertEqual(list(out["RequestID"]), ["71908593 || 00532719", "77782146"])
+        self.assertEqual(list(out["orderNumber"]), ["71908593 || 00532719", "77782146"])
 
     def test_template_purchase_orders_maps_sap_po_lines_and_receipts(self) -> None:
         source = pd.DataFrame(

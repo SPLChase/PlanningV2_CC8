@@ -1609,10 +1609,12 @@ def build_template_service_orders(
 ) -> pd.DataFrame:
     if (issue_tracker is None or issue_tracker.empty) and spares_issued.empty:
         return pd.DataFrame(columns=columns)
+    spares_rows = _service_order_rows_from_spares_issued(spares_issued)
+    trusted_spares_keys = set(spares_rows.get("CallMatchKey", pd.Series(dtype=str)).astype(str).str.strip())
     delivery_by_call = _spares_actual_eta_by_call(spares_issued)
     source = _combine_service_order_sources(
-        _service_order_rows_from_issue_tracker(issue_tracker),
-        _service_order_rows_from_spares_issued(spares_issued),
+        _service_order_rows_from_issue_tracker(issue_tracker, trusted_spares_keys),
+        spares_rows,
     )
     if source.empty:
         return pd.DataFrame(columns=columns)
@@ -1696,16 +1698,32 @@ def _service_order_rows_from_spares_issued(spares_issued: pd.DataFrame) -> pd.Da
     return source
 
 
-def _service_order_rows_from_issue_tracker(issue_tracker: pd.DataFrame | None) -> pd.DataFrame:
+def _service_order_rows_from_issue_tracker(
+    issue_tracker: pd.DataFrame | None,
+    trusted_match_keys: set[str] | None = None,
+) -> pd.DataFrame:
     if issue_tracker is None or issue_tracker.empty:
         return pd.DataFrame()
     source = issue_tracker.copy()
-    for column in ["Call Number", "Subject", "Created", "SLA", "DeliveryCity", "CustomerNormalized", "Customer"]:
+    for column in [
+        "Call Number",
+        "Subject",
+        "ConversationHistory",
+        "Created",
+        "SLA",
+        "DeliveryCity",
+        "CustomerNormalized",
+        "Customer",
+        "Part Nr",
+        "DispatchPartNo",
+        "PurchaseOrder",
+    ]:
         if column not in source.columns:
             source[column] = ""
-    call_number = source["Call Number"].map(_clean_text)
-    subject_ticket = source["Subject"].map(_ticket_number_from_subject)
-    source["ServiceCallNumber"] = call_number.where(call_number.str.strip().ne(""), subject_ticket)
+    trusted_match_keys = trusted_match_keys or set()
+    extracted = source.apply(lambda row: _service_request_id_from_issue_row(row, trusted_match_keys), axis=1)
+    source["ServiceCallNumber"] = extracted.map(lambda item: item[0])
+    source["ServiceOrderEvidence"] = extracted.map(lambda item: item[1])
     source = source[source["ServiceCallNumber"].astype(str).str.strip().ne("")].copy()
     if source.empty:
         return pd.DataFrame()
@@ -1732,6 +1750,8 @@ def _service_call_number(value: object) -> str:
     text = _clean_text(value)
     if not text or text == "-":
         return ""
+    if re.search(r"\b(?:PO|OPP)\b|(?:\d{2}PO|\d{2}OPP)", text, flags=re.IGNORECASE):
+        return ""
     text = re.sub(r"^\s*S\s*[_-]\s*", "", text, flags=re.IGNORECASE)
     tokens = re.findall(r"\d{6,}", text)
     if len(tokens) == 1:
@@ -1741,9 +1761,74 @@ def _service_call_number(value: object) -> str:
     return text
 
 
+def _normalise_service_request_id(value: object) -> str:
+    text = _clean_text(value)
+    if not text:
+        return ""
+    text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"\s*[-/|]+\s*", " || ", text)
+    text = re.sub(r"(?:\s*\|\|\s*)+", " || ", text)
+    return text.strip(" .;")
+
+
+def _explicit_service_request_id_from_text(value: object) -> tuple[str, str]:
+    text = _clean_text(value)
+    if not text:
+        return "", ""
+    patterns = [
+        ("ticket_label", r"\bTicket\s*(?:No|Nr|Number|#)?\s*:?\s*([A-Z]{0,4}\s*\d[\d\s/|\-]{4,}\d)"),
+        ("call_label", r"\bCall\s*(?:No|Nr|Number|#)?\s*:?\s*([A-Z]{0,4}\s*\d[\d\s/|\-]{4,}\d)"),
+        ("service_request_label", r"\b(?:SR|Service\s*Request|Request)\s*(?:No|Nr|Number|#)?\s*:?\s*([A-Z]{0,4}\s*\d[\d\s/|\-]{4,}\d)"),
+    ]
+    for evidence, pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            candidate = _normalise_service_request_id(match.group(1))
+            if candidate:
+                return candidate, evidence
+    return "", ""
+
+
 def _ticket_number_from_subject(value: object) -> str:
-    match = re.search(r"\bTicket\s+(\d{6,})\b", _clean_text(value), flags=re.IGNORECASE)
-    return (match.group(1).lstrip("0") or "0") if match else ""
+    ticket, _ = _explicit_service_request_id_from_text(value)
+    return ticket
+
+
+def _looks_like_clean_service_request_id(value: object, row: pd.Series | None = None) -> bool:
+    text = _clean_text(value)
+    if not text:
+        return False
+    upper = text.upper()
+    if re.search(r"\b(?:PO|OPP)\b|(?:\d{2}PO|\d{2}OPP)|BUFFER|SHORTAGE|SPARES AVAILABILITY", upper):
+        return False
+    if row is not None:
+        part_values = {
+            _part_key(row.get("Part Nr")),
+            _part_key(row.get("DispatchPartNo")),
+        }
+        if _part_key(text) in part_values:
+            return False
+    tokens = re.findall(r"\d{5,}", text)
+    if len(tokens) == 1:
+        return 7 <= len(tokens[0]) <= 8
+    if len(tokens) == 2:
+        return 7 <= len(tokens[0]) <= 8 and 5 <= len(tokens[1]) <= 8
+    return False
+
+
+def _service_request_id_from_issue_row(
+    row: pd.Series,
+    trusted_match_keys: set[str] | None = None,
+) -> tuple[str, str]:
+    for column in ["Subject", "ConversationHistory", "Call Number"]:
+        request_id, evidence = _explicit_service_request_id_from_text(row.get(column))
+        if request_id:
+            return request_id, f"{evidence}:{column}"
+    call_number = _clean_text(row.get("Call Number"))
+    trusted_match_keys = trusted_match_keys or set()
+    if _looks_like_clean_service_request_id(call_number, row) and _call_match_key(call_number) in trusted_match_keys:
+        return _normalise_service_request_id(call_number), "clean_call_column:Call Number"
+    return "", ""
 
 
 def _service_order_location(group: pd.DataFrame) -> str:
