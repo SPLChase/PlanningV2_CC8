@@ -117,7 +117,7 @@ POPULATED_TEMPLATE_FIELDS = {
         "Master": "Reference masters.csv:SPL Master by used part",
     },
     "ServiceOrder": {
-        "orderNumber": "Spares issued report:Cust Ord No normalised to call/ticket number",
+        "orderNumber": "Spares issued report:Del No. as the SAP delivery note id where available; falls back to call/ticket number for helpdesk-only rows",
         "RequestID": "Spares issued report:Cust Ord No normalised to call/ticket number",
         "location": "HelpDesk issue tracker:DeliveryCity by call number; falls back to report customer label",
         "actualEta": "Spares issued report:Del Date + Del Time, representing delivery note issued time",
@@ -1627,9 +1627,10 @@ def build_template_service_orders(
             actual_eta = _first_datetime(group["DeliveryDateTimeValue"])
         sla = _most_common_nonblank(group.get("SLA", pd.Series(dtype=str)))
         sla_fields = _service_order_sla_fields(open_dt, sla)
+        delivery_note = _first_nonblank(group.get("DeliveryNoteNumber", pd.Series(dtype=str)))
         rows.append(
             {
-                "orderNumber": call_number,
+                "orderNumber": delivery_note or call_number,
                 "RequestID": call_number,
                 "location": _service_order_location(group),
                 "actualEta": _format_datetime(actual_eta),
@@ -1676,7 +1677,7 @@ def _service_order_rows_from_spares_issued(spares_issued: pd.DataFrame) -> pd.Da
     if spares_issued.empty:
         return pd.DataFrame()
     source = spares_issued.copy()
-    for column in ["Cust Ord No", "Order Date", "Order Time", "Del Date", "Del Time", "Customer ", "Customer Name"]:
+    for column in ["Cust Ord No", "Order Date", "Order Time", "Del Date", "Del Time", "Del No.", "Customer ", "Customer Name"]:
         if column not in source.columns:
             source[column] = ""
     source["ServiceCallNumber"] = source["Cust Ord No"].map(_service_call_number)
@@ -1691,6 +1692,7 @@ def _service_order_rows_from_spares_issued(spares_issued: pd.DataFrame) -> pd.Da
     source["DeliveryCity"] = ""
     source["CustomerNormalized"] = ""
     source["Customer"] = source["Customer "]
+    source["DeliveryNoteNumber"] = source["Del No."].map(_delivery_note_id)
     return source
 
 
@@ -1710,6 +1712,7 @@ def _service_order_rows_from_issue_tracker(issue_tracker: pd.DataFrame | None) -
     source["CallMatchKey"] = source["ServiceCallNumber"].map(_call_match_key)
     source = source[source["CallMatchKey"].astype(str).str.strip().ne("")].copy()
     source["CreatedDateTimeValue"] = source["Created"].map(_parse_datetime_value)
+    source["DeliveryNoteNumber"] = ""
     return source
 
 
@@ -3048,6 +3051,24 @@ def _most_common_nonblank(values: pd.Series, excluded: set[str] | None = None) -
     if cleaned.empty:
         return ""
     return str(cleaned.value_counts().idxmax())
+
+
+def _first_nonblank(values: pd.Series) -> str:
+    cleaned = values.map(_clean_text)
+    cleaned = cleaned[cleaned.str.strip().ne("")]
+    if cleaned.empty:
+        return ""
+    return str(cleaned.iloc[0])
+
+
+def _delivery_note_id(value: object) -> str:
+    text = _clean_text(value)
+    if not text or text == "-":
+        return ""
+    text = re.sub(r"\.0$", "", text)
+    if text.upper().startswith("DN "):
+        return text
+    return f"DN {text}"
 
 
 def _customer_match_key(value: object) -> str:

@@ -863,6 +863,7 @@ class OnboardingCsvTests(unittest.TestCase):
                 "Order Time": ["1631", "1700", "1403", "0815"],
                 "Del Date": ["20/01/2026", "21/01/2026", "28/01/2026", "03/02/2026"],
                 "Del Time": ["1631", "0900", "1404", "0915"],
+                "Del No.": ["50001001", "50001002", "50001003", "50001004"],
                 "Customer ": ["WCED", "WCED", "SENWES", "SPARES ONLY CUSTOMER"],
                 "Customer Name": ["DW PC CORPORATION", "DW PC CORPORATION", "COCRE8 TECHNOLOGY SOLUTIONS", "SPARES ONLY CUSTOMER"],
             }
@@ -901,22 +902,26 @@ class OnboardingCsvTests(unittest.TestCase):
         )
 
         self.assertEqual(len(out), 5)
-        self.assertEqual(out.loc[0, "orderNumber"], "71919593")
+        self.assertEqual(out.loc[0, "orderNumber"], "DN 50001001")
         self.assertEqual(out.loc[0, "RequestID"], "71919593")
         self.assertEqual(out.loc[0, "location"], "Cape Town")
         self.assertEqual(out.loc[0, "actualEta"], "2026-01-20 16:31:00")
         self.assertEqual(out.loc[0, "slaEtaClock"], "8")
         self.assertEqual(out.loc[0, "slaResolveClock"], "8")
         self.assertEqual(out.loc[0, "slaResolveDateTime"], "2026-01-21 00:31:00")
-        self.assertEqual(out.loc[1, "orderNumber"], "71942838")
+        self.assertEqual(out.loc[1, "orderNumber"], "DN 50001003")
+        self.assertEqual(out.loc[1, "RequestID"], "71942838")
         self.assertEqual(out.loc[1, "location"], "JHB")
         self.assertEqual(out.loc[1, "slaResolveClock"], "")
         self.assertEqual(out.loc[2, "orderNumber"], "77782146")
+        self.assertEqual(out.loc[2, "RequestID"], "77782146")
         self.assertEqual(out.loc[2, "location"], "SANLAM")
         self.assertEqual(out.loc[2, "actualEta"], "")
         self.assertEqual(out.loc[3, "orderNumber"], "72759481")
+        self.assertEqual(out.loc[3, "RequestID"], "72759481")
         self.assertEqual(out.loc[3, "location"], "JHB")
-        self.assertEqual(out.loc[4, "orderNumber"], "88888888")
+        self.assertEqual(out.loc[4, "orderNumber"], "DN 50001004")
+        self.assertEqual(out.loc[4, "RequestID"], "88888888")
         self.assertEqual(out.loc[4, "location"], "SPARES ONLY CUSTOMER")
         self.assertEqual(out.loc[4, "actualEta"], "2026-02-03 09:15:00")
 
