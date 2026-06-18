@@ -413,6 +413,12 @@ def _first_existing(*frames: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame()
 
 
+def _select_parts_usage_source(live_delivery_notes: pd.DataFrame, stock_audit: pd.DataFrame) -> pd.DataFrame:
+    """Use live SAP DNs for current usage; fall back to the manual stock audit only if SAP is unavailable."""
+
+    return live_delivery_notes if not live_delivery_notes.empty else stock_audit
+
+
 def generate_onboarding_csvs(cfg: PlanningConfig, out_dir: Path) -> list[Path]:
     csv_dir = out_dir
     template_dir = out_dir.parent / "investigation_templates"
@@ -423,7 +429,7 @@ def generate_onboarding_csvs(cfg: PlanningConfig, out_dir: Path) -> list[Path]:
     purchase_orders = fetch_live_purchase_orders(cfg)
     usage_context = fetch_live_delivery_note_usage(cfg)
     stock_audit = _read_stock_audit(_stock_audit_3y_path(cfg))
-    parts_usage_source = stock_audit if not stock_audit.empty else usage_context
+    parts_usage_source = _select_parts_usage_source(usage_context, stock_audit)
     usage = usage_context if not usage_context.empty else stock_audit
     stock_flow = stock_audit
     customers = pd.DataFrame()

@@ -29,6 +29,7 @@ from planning_v2.onboarding_csvs import (
     parse_customer_sla,
     validate_template_outputs,
     validate_outputs,
+    _select_parts_usage_source,
 )
 from planning_v2.schemas import CONFIRMED_OUTPUT_OBJECTS, PENDING_OUTPUT_OBJECTS
 
@@ -764,6 +765,14 @@ class OnboardingCsvTests(unittest.TestCase):
         self.assertEqual(out.loc[0, "orderNumber"], "DN 50006687")
         self.assertEqual(out.loc[0, "requestId"], "72749474")
         self.assertEqual(out.loc[1, "orderNumber"], "DN 50006712")
+
+    def test_generate_prefers_live_delivery_notes_over_stale_stock_audit_for_parts_usage(self) -> None:
+        live_delivery_notes = pd.DataFrame({"DeliveryNoteNumber": ["50007155"], "WarehouseCode": ["FUJITSU"]})
+        stock_audit = pd.DataFrame({"Document": ["DN 50006687"], "Whse": ["FUJ CT"]})
+
+        selected = _select_parts_usage_source(live_delivery_notes, stock_audit)
+
+        self.assertEqual(list(selected["DeliveryNoteNumber"]), ["50007155"])
 
     def test_template_parts_usage_enriches_sap_delivery_note_context(self) -> None:
         usage = pd.DataFrame(
