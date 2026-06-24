@@ -412,7 +412,8 @@ class OnboardingCsvTests(unittest.TestCase):
     def test_template_parts_defaults_missing_main_alternative_to_primary(self) -> None:
         parts = pd.DataFrame({"ItemNo": ["A1"], "SPLMaster": ["SPL1"], "ItemDescription": ["Part A"], "DisplayItemNo": ["A1"]})
         out = build_template_parts(parts, ["SPLMaster", "PartNumber", "isPrimary", "primaryPartNumber", "description"])
-        self.assertEqual(out.loc[0, "SPLMaster"], "")
+        self.assertEqual(out.loc[0, "SPLMaster"], "A1")
+        self.assertEqual(out.loc[0, "OriginalSPLMaster"], "")
         self.assertEqual(out.loc[0, "MasterKey"], "A1")
         self.assertEqual(out.loc[0, "Primary Part"], "A1")
         self.assertEqual(out.loc[0, "B_Part"], "A1")
@@ -424,6 +425,7 @@ class OnboardingCsvTests(unittest.TestCase):
         masters = pd.DataFrame({"SPL Master": ["SPL8000000"], "Items linked": ["34076947;38049457"]})
         out = build_template_parts(parts, ["SPLMaster", "PartNumber", "description"], masters=masters)
         self.assertEqual(out.loc[0, "SPLMaster"], "SPL8000000")
+        self.assertEqual(out.loc[0, "OriginalSPLMaster"], "SPL8000000")
         self.assertEqual(out.loc[0, "MasterKey"], "SPL8000000")
 
     def test_template_parts_populates_primary_from_spi_main_alternative(self) -> None:
@@ -643,7 +645,8 @@ class OnboardingCsvTests(unittest.TestCase):
 
         out = build_template_parts_usage(usage, ["orderNumber", "partCode", "Master"], pd.DataFrame())
 
-        self.assertEqual(out.loc[0, "Master"], "")
+        self.assertEqual(out.loc[0, "Master"], "UNMAPPED1")
+        self.assertEqual(out.loc[0, "OriginalMaster"], "")
         self.assertEqual(out.loc[0, "MasterKey"], "UNMAPPED1")
 
     def test_template_parts_usage_from_issue_tracker_can_build_review_rows(self) -> None:

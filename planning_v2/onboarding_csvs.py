@@ -29,8 +29,9 @@ POPULATED_TEMPLATE_FIELDS = {
     "Parts": {
         "Primary Part": "SPI_DATA.csv:Main alternative par normalized to the part number format expected by Planning V2",
         "B_Part": "SAP Service Layer SQLQueries:OITM.ItemCode normalized as the actual CoCre8/SAP part number",
-        "SPLMaster": "Reference masters.csv:SPL Master by linked item",
-        "MasterKey": "Derived import key: SPLMaster when mapped, otherwise actual PartNumber",
+        "SPLMaster": "Derived import key: original SPL Master when mapped, otherwise actual PartNumber",
+        "OriginalSPLMaster": "Reference masters.csv:SPL Master by linked item before fallback-to-part import key",
+        "MasterKey": "Derived import key duplicate for review: OriginalSPLMaster when mapped, otherwise actual PartNumber",
         "PartNumber": "SAP Service Layer SQLQueries:OITM.ItemCode",
         "isPrimary": "SPI_DATA.csv:Main alternative par equals material/part number; defaults true when no main alternative is listed",
         "primaryPartNumber": "SPI_DATA.csv:Main alternative par; defaults to own part number when no main alternative is listed",
@@ -116,8 +117,9 @@ POPULATED_TEMPLATE_FIELDS = {
         "Warehouse": "MinStock3/Exco warehouse lookup:WarehouseName by SAP DLN1.WhsCode",
         "Warehouse Code": "SAP Service Layer SQLQueries:DLN1.WhsCode",
         "deviceSerialNumber": "SAP Service Layer SQLQueries:parsed Serial number from ODLN.Comments where present",
-        "Master": "Reference masters.csv:SPL Master by used part",
-        "MasterKey": "Derived import key: Master when mapped, otherwise actual delivered partCode",
+        "Master": "Derived import key: original SPL Master when mapped, otherwise actual delivered partCode",
+        "OriginalMaster": "Reference masters.csv:SPL Master by used part before fallback-to-part import key",
+        "MasterKey": "Derived import key duplicate for review: OriginalMaster when mapped, otherwise actual delivered partCode",
     },
     "ServiceOrder": {
         "orderNumber": "Spares issued report:Del No. as the SAP delivery note id where available; falls back to call/ticket number for helpdesk-only rows",
@@ -1310,7 +1312,14 @@ def build_template_parts(
     spl_master = item_keys.map(master_by_part).fillna("")
     if "SPLMaster" in out.columns:
         out["SPLMaster"] = spl_master
-    _add_master_key_column(out, spl_master, item_keys, after="SPLMaster" if "SPLMaster" in out.columns else "B_Part")
+    _apply_master_key_columns(
+        out,
+        spl_master,
+        item_keys,
+        import_master_column="SPLMaster",
+        original_master_column="OriginalSPLMaster",
+        after="SPLMaster" if "SPLMaster" in out.columns else "B_Part",
+    )
     if "PartNumber" in out.columns:
         out["PartNumber"] = item_keys
     if "primaryPartNumber" in out.columns:
@@ -1409,16 +1418,23 @@ def _add_parts_usage_ui_aliases(out: pd.DataFrame, part_code: pd.Series, warehou
     _set_or_insert_column(out, "Pu Warehouse", warehouse_code, after="Pu Warehouse Code")
 
 
-def _add_master_key_column(
+def _apply_master_key_columns(
     out: pd.DataFrame,
     master_values: pd.Series,
     fallback_part_values: pd.Series,
     *,
+    import_master_column: str | None = None,
+    original_master_column: str | None = None,
     after: str | None = None,
 ) -> None:
     master = master_values.fillna("").astype(str).str.strip()
     fallback = fallback_part_values.fillna("").astype(str).str.strip()
     master_key = master.where(master.ne(""), fallback)
+    if import_master_column and import_master_column in out.columns:
+        if original_master_column:
+            _set_or_insert_column(out, original_master_column, master, after=import_master_column)
+            after = original_master_column
+        out[import_master_column] = master_key
     _set_or_insert_column(out, "MasterKey", master_key, after=after)
 
 
@@ -1480,7 +1496,14 @@ def _build_template_parts_usage_from_sap_delivery_notes(
     master_values = part_code.map(_master_lookup(masters)).fillna("")
     if "Master" in out.columns:
         out["Master"] = master_values
-    _add_master_key_column(out, master_values, part_code, after="Master" if "Master" in out.columns else "partCode")
+    _apply_master_key_columns(
+        out,
+        master_values,
+        part_code,
+        import_master_column="Master",
+        original_master_column="OriginalMaster",
+        after="Master" if "Master" in out.columns else "partCode",
+    )
     return out
 
 
@@ -1564,7 +1587,14 @@ def _build_template_parts_usage_from_stock_audit(
         out["partsUsedDateTime"] = parsed.dt.strftime("%Y-%m-%d").fillna("")
     if "deviceSerialNumber" in out.columns:
         out["deviceSerialNumber"] = serial
-    _add_master_key_column(out, master_values, part_code, after="Master" if "Master" in out.columns else "partCode")
+    _apply_master_key_columns(
+        out,
+        master_values,
+        part_code,
+        import_master_column="Master",
+        original_master_column="OriginalMaster",
+        after="Master" if "Master" in out.columns else "partCode",
+    )
     return out.drop_duplicates(keep="first")
 
 
@@ -1627,7 +1657,14 @@ def build_template_parts_usage_from_issue_tracker(
     master_values = tracker_master.where(tracker_master.ne(""), mapped)
     if "Master" in out.columns:
         out["Master"] = master_values
-    _add_master_key_column(out, master_values, part, after="Master" if "Master" in out.columns else "partCode")
+    _apply_master_key_columns(
+        out,
+        master_values,
+        part,
+        import_master_column="Master",
+        original_master_column="OriginalMaster",
+        after="Master" if "Master" in out.columns else "partCode",
+    )
     return out.drop_duplicates(keep="first")
 
 
