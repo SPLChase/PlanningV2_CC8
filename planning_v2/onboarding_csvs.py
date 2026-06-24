@@ -30,6 +30,7 @@ POPULATED_TEMPLATE_FIELDS = {
         "Primary Part": "SPI_DATA.csv:Main alternative par normalized to the part number format expected by Planning V2",
         "B_Part": "SAP Service Layer SQLQueries:OITM.ItemCode normalized as the actual CoCre8/SAP part number",
         "SPLMaster": "Reference masters.csv:SPL Master by linked item",
+        "MasterKey": "Derived import key: SPLMaster when mapped, otherwise actual PartNumber",
         "PartNumber": "SAP Service Layer SQLQueries:OITM.ItemCode",
         "isPrimary": "SPI_DATA.csv:Main alternative par equals material/part number; defaults true when no main alternative is listed",
         "primaryPartNumber": "SPI_DATA.csv:Main alternative par; defaults to own part number when no main alternative is listed",
@@ -67,6 +68,7 @@ POPULATED_TEMPLATE_FIELDS = {
         "quantityAllocated": "SAP Service Layer SQLQueries:OITW.IsCommited",
         "quantityOnHand": "SAP Service Layer SQLQueries:OITW.OnHand",
         "quantityInbound": "SAP Service Layer SQLQueries:OITW.OnOrder",
+        "quantityOutbound": "Business rule: 0 for CoCre8 MVP; CoCre8 stock is issued directly rather than staged as outbound stock",
         "uniqueId": "Derived stable integer from MinStock-style RowKey part|SPLMaster|warehouse",
     },
     "Vendors": {
@@ -115,6 +117,7 @@ POPULATED_TEMPLATE_FIELDS = {
         "Warehouse Code": "SAP Service Layer SQLQueries:DLN1.WhsCode",
         "deviceSerialNumber": "SAP Service Layer SQLQueries:parsed Serial number from ODLN.Comments where present",
         "Master": "Reference masters.csv:SPL Master by used part",
+        "MasterKey": "Derived import key: Master when mapped, otherwise actual delivered partCode",
     },
     "ServiceOrder": {
         "orderNumber": "Spares issued report:Del No. as the SAP delivery note id where available; falls back to call/ticket number for helpdesk-only rows",
@@ -202,7 +205,6 @@ OUT_OF_SCOPE_TEMPLATE_FIELDS = {
     ("Warehouses", "isRepairWarehouse"),
     ("Warehouses", "isBootStockable"),
     ("WarehouseStockOnHand", "inventoryType"),
-    ("WarehouseStockOnHand", "quantityOutbound"),
     ("Customers", "customerGroupId"),
     ("Customers", "dseSlaCost"),
     ("Customers", "dseSlaRevenue"),
@@ -1305,8 +1307,10 @@ def build_template_parts(
         out.insert(insert_at, "B_Part", item_keys)
     else:
         out["B_Part"] = item_keys
+    spl_master = item_keys.map(master_by_part).fillna("")
     if "SPLMaster" in out.columns:
-        out["SPLMaster"] = item_keys.map(master_by_part).fillna("")
+        out["SPLMaster"] = spl_master
+    _add_master_key_column(out, spl_master, item_keys, after="SPLMaster" if "SPLMaster" in out.columns else "B_Part")
     if "PartNumber" in out.columns:
         out["PartNumber"] = item_keys
     if "primaryPartNumber" in out.columns:
@@ -1405,6 +1409,19 @@ def _add_parts_usage_ui_aliases(out: pd.DataFrame, part_code: pd.Series, warehou
     _set_or_insert_column(out, "Pu Warehouse", warehouse_code, after="Pu Warehouse Code")
 
 
+def _add_master_key_column(
+    out: pd.DataFrame,
+    master_values: pd.Series,
+    fallback_part_values: pd.Series,
+    *,
+    after: str | None = None,
+) -> None:
+    master = master_values.fillna("").astype(str).str.strip()
+    fallback = fallback_part_values.fillna("").astype(str).str.strip()
+    master_key = master.where(master.ne(""), fallback)
+    _set_or_insert_column(out, "MasterKey", master_key, after=after)
+
+
 def _build_template_parts_usage_from_sap_delivery_notes(
     usage: pd.DataFrame,
     columns: list[str],
@@ -1460,8 +1477,10 @@ def _build_template_parts_usage_from_sap_delivery_notes(
         out["Warehouse Code"] = warehouse_code
     if "deviceSerialNumber" in out.columns:
         out["deviceSerialNumber"] = serial
+    master_values = part_code.map(_master_lookup(masters)).fillna("")
     if "Master" in out.columns:
-        out["Master"] = dn["ItemNo"].map(_part_key).map(_master_lookup(masters)).fillna("")
+        out["Master"] = master_values
+    _add_master_key_column(out, master_values, part_code, after="Master" if "Master" in out.columns else "partCode")
     return out
 
 
@@ -1525,8 +1544,9 @@ def _build_template_parts_usage_from_stock_audit(
         out["partCode"] = part_code
     if "serialNumber" in out.columns:
         out["serialNumber"] = serial
+    master_values = part_code.map(_master_lookup(masters)).fillna("")
     if "Master" in out.columns:
-        out["Master"] = part_code.map(_master_lookup(masters)).fillna("")
+        out["Master"] = master_values
     if "Warehouse" in out.columns:
         out["Warehouse"] = warehouse_name
     if "Warehouse Code" not in out.columns:
@@ -1544,6 +1564,7 @@ def _build_template_parts_usage_from_stock_audit(
         out["partsUsedDateTime"] = parsed.dt.strftime("%Y-%m-%d").fillna("")
     if "deviceSerialNumber" in out.columns:
         out["deviceSerialNumber"] = serial
+    _add_master_key_column(out, master_values, part_code, after="Master" if "Master" in out.columns else "partCode")
     return out.drop_duplicates(keep="first")
 
 
@@ -1600,11 +1621,13 @@ def build_template_parts_usage_from_issue_tracker(
         out["Warehouse Code"] = warehouse_code
     if "deviceSerialNumber" in out.columns:
         out["deviceSerialNumber"] = _col(source, "Serial Nr")
+    by_part = _master_lookup(masters)
+    mapped = part.map(by_part).fillna("")
+    tracker_master = _col(source, "SPLMaster").astype(str).str.strip()
+    master_values = tracker_master.where(tracker_master.ne(""), mapped)
     if "Master" in out.columns:
-        by_part = _master_lookup(masters)
-        mapped = part.map(by_part).fillna("")
-        tracker_master = _col(source, "SPLMaster").astype(str).str.strip()
-        out["Master"] = tracker_master.where(tracker_master.ne(""), mapped)
+        out["Master"] = master_values
+    _add_master_key_column(out, master_values, part, after="Master" if "Master" in out.columns else "partCode")
     return out.drop_duplicates(keep="first")
 
 
@@ -2607,6 +2630,8 @@ def build_template_stock_on_hand(
         out["quantityOnHand"] = _to_number(_first_col(inventory, ["OnHand", "Quantity"]))
     if "quantityInbound" in out.columns:
         out["quantityInbound"] = _to_number(_first_col(inventory, ["OnOrder", "Ordered"]))
+    if "quantityOutbound" in out.columns:
+        out["quantityOutbound"] = 0
     if "uniqueId" in out.columns:
         by_part = _master_lookup(masters)
         part_keys = part_number.map(_part_key)

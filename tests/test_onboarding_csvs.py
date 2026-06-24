@@ -224,6 +224,7 @@ class OnboardingCsvTests(unittest.TestCase):
         self.assertEqual(stock.loc[0, "partNumber"], "A1")
         self.assertEqual(stock.loc[0, "quantityOnHand"], 2)
         self.assertEqual(stock.loc[0, "inventoryType"], "")
+        self.assertEqual(stock.loc[0, "quantityOutbound"], 0)
         self.assertNotEqual(stock.loc[0, "uniqueId"], "")
 
     def test_template_stock_on_hand_populates_canonical_part_code(self) -> None:
@@ -412,6 +413,7 @@ class OnboardingCsvTests(unittest.TestCase):
         parts = pd.DataFrame({"ItemNo": ["A1"], "SPLMaster": ["SPL1"], "ItemDescription": ["Part A"], "DisplayItemNo": ["A1"]})
         out = build_template_parts(parts, ["SPLMaster", "PartNumber", "isPrimary", "primaryPartNumber", "description"])
         self.assertEqual(out.loc[0, "SPLMaster"], "")
+        self.assertEqual(out.loc[0, "MasterKey"], "A1")
         self.assertEqual(out.loc[0, "Primary Part"], "A1")
         self.assertEqual(out.loc[0, "B_Part"], "A1")
         self.assertEqual(out.loc[0, "isPrimary"], "True")
@@ -422,6 +424,7 @@ class OnboardingCsvTests(unittest.TestCase):
         masters = pd.DataFrame({"SPL Master": ["SPL8000000"], "Items linked": ["34076947;38049457"]})
         out = build_template_parts(parts, ["SPLMaster", "PartNumber", "description"], masters=masters)
         self.assertEqual(out.loc[0, "SPLMaster"], "SPL8000000")
+        self.assertEqual(out.loc[0, "MasterKey"], "SPL8000000")
 
     def test_template_parts_populates_primary_from_spi_main_alternative(self) -> None:
         parts = pd.DataFrame(
@@ -624,6 +627,24 @@ class OnboardingCsvTests(unittest.TestCase):
         out = build_template_parts_usage(usage, ["orderNumber", "partCode", "Master"], masters)
 
         self.assertEqual(out.loc[0, "Master"], "SPL1")
+        self.assertEqual(out.loc[0, "MasterKey"], "SPL1")
+
+    def test_template_parts_usage_master_key_falls_back_to_part_when_unmapped(self) -> None:
+        usage = pd.DataFrame(
+            {
+                "DeliveryNoteNumber": ["50006351"],
+                "DocDate": ["20251017"],
+                "Comments": [""],
+                "ItemNo": ["UNMAPPED1"],
+                "WarehouseCode": ["FUJITSU"],
+                "Quantity": [1],
+            }
+        )
+
+        out = build_template_parts_usage(usage, ["orderNumber", "partCode", "Master"], pd.DataFrame())
+
+        self.assertEqual(out.loc[0, "Master"], "")
+        self.assertEqual(out.loc[0, "MasterKey"], "UNMAPPED1")
 
     def test_template_parts_usage_from_issue_tracker_can_build_review_rows(self) -> None:
         tracker = pd.DataFrame(
